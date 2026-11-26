@@ -1,11 +1,11 @@
-//! hoi4-rust-accel v1.1: Native Rust Engine & AI Accelerator for Hearts of Iron IV (Linux x86_64 v1.20.0.0)
+//! hoi4-rust-accel v1.2: Native Rust Engine & AI Accelerator for Hearts of Iron IV (Linux x86_64 v1.20.0.0)
 //!
 //! Features (non-destructive LD_PRELOAD, configurable via `hoi4_accel.ini` or `HOI4_ACCEL_*` env vars):
 //!   1. fast_sched / HOI4_ACCEL_FAST_SCHED=1       : Lock-free zero-bounce Rust worker scheduler (PopTaskOrWait @ 0x3666d70).
 //!   2. fast_wait / HOI4_ACCEL_FAST_WAIT=1         : Lock-free CTask::Wait (0x3662b10) without tight sched_yield() traps.
 //!   3. fast_yield / HOI4_ACCEL_FAST_YIELD=1       : Patches hoi4 sched_yield@plt (0x5140d0) — eliminates spin-wait syscall storms.
 //!   4. smooth_fps / HOI4_ACCEL_SMOOTH_FPS=<fps>   : Mid-Tick Anti-Freeze Frame Pacer (ShouldRenderMidTick @ 0x20b07a0).
-//!   5. target_fps / HOI4_ACCEL_TARGET_FPS=<fps>   : Render-Aware Multi-Tick Speed-5 Bursting (UpdateSession @ 0x203be20).
+//!   5. target_fps / HOI4_ACCEL_TARGET_FPS=<fps>   : Render-Aware Multi-Tick Speed-5 Bursting (UpdateSession @ 0x203be20, auto-disabled in MP).
 //!   6. affinity / HOI4_ACCEL_AFFINITY=1           : Topology-aware physical/SMT core pinning for main & worker threads.
 //!   7. fast_event / HOI4_ACCEL_FAST_EVENT=1       : Lock-free atomic + Linux SYS_futex worker pool synchronization.
 //!   8. no_job_clock / HOI4_ACCEL_NO_JOB_CLOCK=1   : Strips per-microjob system_clock::now() + atomic lock add in ExecuteTask.
@@ -15,11 +15,12 @@
 //!  12. civil_war_fix / HOI4_ACCEL_CIVIL_WAR_FIX=1 : Coalesces 100+ per-state map/supply overlay rebuilds in CCivilWarSetup::Execute (0x1bdfa80).
 //!  13. ai_smart_supply / HOI4_ACCEL_AI_SMART_SUPPLY=1 : Proactive AI railway, supply-hub & truck motorization logistics.
 //!  14. ai_smart_airbase / HOI4_ACCEL_AI_SMART_AIRBASE=1 : Boosts needed frontline air_base queue prio (0x74f4d0) + coverage rebasing.
-//!  15. ai_tactical_prudence / HOI4_ACCEL_AI_TACTICAL_PRUDENCE=1 : Non-cheating Sheep-AI-based combat prudence, bulge detection & AIFC spearheads.
-//!  16. ai_throttle_minors / HOI4_ACCEL_AI_THROTTLE_MINORS=1 : Staggered hourly AI fast-skip strictly for peaceful non-major AI minors.
-//!  17. quiet_log / HOI4_ACCEL_QUIET_LOG=1         : Lock-free error.log spam deduplicator (SetLogger @ 0x361bec0).
-//!  18. fast_save / HOI4_ACCEL_FAST_SAVE=1         : Removes blocking synchronous fsync() stalls during saves (0x3672b60).
-//!  19. no_telemetry / HOI4_ACCEL_NO_TELEMETRY=1   : Disables Paradox SDK QueueAndSendTelemetry (0x315d2af) cleanly.
+//!  15. ai_tactical_prudence / HOI4_ACCEL_AI_TACTICAL_PRUDENCE=1 : Non-cheating Sheep-AI tactical prudence, equipment conservation & AIFC spearheads (zero empty-tile stall).
+//!  16. ai_smart_peace / HOI4_ACCEL_AI_SMART_PEACE=1 : Anti-bordergore peace conference scoring (CPeaceWinnerAi::CalcStateActionScore @ 0xeafef0).
+//!  17. ai_throttle_minors / HOI4_ACCEL_AI_THROTTLE_MINORS=1 : Staggered hourly AI fast-skip strictly for peaceful non-major AI minors.
+//!  18. quiet_log / HOI4_ACCEL_QUIET_LOG=1         : Lock-free error.log spam deduplicator v2 (SetLogger @ 0x361bec0, line-number immune).
+//!  19. fast_save / HOI4_ACCEL_FAST_SAVE=1         : Removes blocking synchronous fsync() stalls during saves (0x3672b60).
+//!  20. no_telemetry / HOI4_ACCEL_NO_TELEMETRY=1   : Disables Paradox SDK QueueAndSendTelemetry (0x315d2af) cleanly.
 
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
@@ -42,6 +43,9 @@ const OFF_EXEC_TASK_NOW2: usize = 0x3666cc9;
 const OFF_SESSION_UPDATE: usize = 0x203be20;
 const OFF_GAMESTATE_PTR: usize = 0x45a6a00;
 const OFF_GAMESTATE_TICK_CLOCK: usize = 0x20ef870;
+const OFF_GS_NUM_PLAYERS: usize = 0x104;
+const OFF_GS_STATES_DATA: usize = 0x2c8;
+const OFF_GS_STATES_LEN: usize = 0x2d4;
 const OFF_GS_GAME_SPEED: usize = 0x4b4;
 const OFF_GS_PAUSED: usize = 0x4b8;
 
@@ -111,40 +115,67 @@ const OFF_NDEF_OUR_COMBATS_AIR: usize = 0x4594408;   // fp64 (15_500_000 -> 45_0
 const OFF_NDEF_FIGHTERS_PER_PLN: usize = 0x4594478;  // fp64 (100_000 -> 200_000)
 const OFF_NDEF_DEF_SUPPLY_AIR: usize = 0x4594318;    // fp64 (400_000 -> 900_000)
 
-// v1.1: Tactical Prudence & AIFC Spearheads (Sheep AI / Discord AI non-cheating NDefines::NAI)
-const OFF_NDEF_ATK_MIN_STR_LOW: usize = 0x4593298;   // fp64 (60_000 -> 75_000)
-const OFF_NDEF_ATK_MIN_STR_MED: usize = 0x45932a8;   // fp64 (50_000 -> 65_000)
-const OFF_NDEF_ATK_MIN_ORG_HIGH: usize = 0x4593288;  // fp64 (45_000 -> 52_000)
-const OFF_NDEF_ATK_MIN_STR_HIGH: usize = 0x45932b8;  // fp64 (30_000 -> 50_000)
-const OFF_NDEF_CANCEL_DISADV_RAT: usize = 0x4593f48; // fp64 (150_000 -> 125_000)
-const OFF_NDEF_CANCEL_MIN_DUR_HR: usize = 0x4593f58; // i32  (48 -> 20)
-const OFF_NDEF_DESP_WEAK_STR_LIM: usize = 0x4594a18; // fp64 (35_000 -> 65_000)
-const OFF_NDEF_FRONT_EVAL_ACC: usize = 0x45951c8;    // fp64 (100_000 -> 150_000)
-const OFF_NDEF_FRONT_EVAL_AIR: usize = 0x45951d8;    // fp64 (100_000 -> 200_000)
-const OFF_NDEF_FRONT_EVAL_SUPLCK: usize = 0x45951e8; // fp64 (100_000 -> 150_000)
-const OFF_NDEF_TERRAIN_IMPORT: usize = 0x4594778;    // fp64 (1_000_000)
-const OFF_NDEF_TANKS_MOUNTAINS: usize = 0x4594758;   // fp64 signed (-> -1_500_000)
-const OFF_NDEF_TANKS_JUNGLE: usize = 0x4594768;      // fp64 signed (-> -2_000_000)
-const OFF_NDEF_ENTRENCH_WEIGHT: usize = 0x45934d8;   // fp64 (200_000 -> 400_000)
-const OFF_NDEF_ENCIRCLE_DISC_HRS: usize = 0x4593af8; // i32  (72 -> 24)
-const OFF_NDEF_BULGE_LOW_CUTOFF: usize = 0x45940e8;  // fp64 (95_000 -> 120_000)
-const OFF_NDEF_BULGE_HIGH_CUTOFF: usize = 0x45940d8; // fp64 (150_000 -> 180_000)
-const OFF_NDEF_CUTOFF_EDGE_PROX: usize = 0x45940f8;  // i32  (2 -> 1)
-const OFF_NDEF_MAX_MICRO_ATKS: usize = 0x4593c78;    // i32  (3 -> 5)
-const OFF_NDEF_MICRO_INACT_VAL: usize = 0x4593f88;   // fp64 (25_000 -> 15_000)
-const OFF_NDEF_AIFC_UPD_DAYS: usize = 0x4595ec8;     // i32  (5 -> 4)
-const OFF_NDEF_AIFC_UNIT_RATIO: usize = 0x4595f18;   // fp64 (15_000 -> 22_000)
-const OFF_NDEF_AIFC_ACTIVATE_ORG: usize = 0x4595f48; // fp64 (20_000 -> 42_000)
-const OFF_NDEF_AIFC_NUDGE_DAYS: usize = 0x4595f78;   // i32  (15 -> 10)
-const OFF_NDEF_AIFC_HARDNESS: usize = 0x4595fd8;     // fp64 (30_000_000 -> 80_000_000)
-const OFF_NDEF_AIFC_ARMOR: usize = 0x4595fb8;        // fp64 (3_000_000 -> 8_000_000)
-const OFF_NDEF_AIFC_SOFT_ATK: usize = 0x4595f98;     // fp64 (600_000 -> 1_200_000)
-const OFF_NDEF_AIFC_HARD_ATK: usize = 0x4595fa8;     // fp64 (800_000 -> 1_600_000)
-const OFF_NDEF_AIFC_EXPERIENCE: usize = 0x4596048;   // fp64 (30_000_000 -> 50_000_000)
-const OFF_NDEF_AIFC_TGT_SUPPLY: usize = 0x4596068;   // fp64 (2_000_000 -> 3_000_000)
-const OFF_NDEF_AIFC_TGT_PORT: usize = 0x4596078;     // fp64 (1_000_000 -> 1_500_000)
-const OFF_NDEF_AIFC_TGT_PORT_LVL: usize = 0x4596088; // fp64 (100_000 -> 200_000)
-const OFF_NDEF_AIFC_COST_MTN: usize = 0x4596128;     // fp64 (300_000 -> 400_000)
+// v1.1 -> v1.2: Tactical Prudence, Equipment Conservation & AIFC Spearheads (Sheep AI non-cheating NDefines::NAI)
+// NOTE: PLAN_ATTACK_MIN_STRENGTH_FACTOR_* are intentionally left untouched at vanilla because CUnitOrder (0x2569859)
+// checks that flag even when stepping into undefended empty tiles. Anti-suicide & equipment preservation use
+// ATTACK_HEAVILY_DEFENDED_LIMIT, PLAN_VALUE_TO_EXECUTE, STR/ORG_UNIT_WEAK, PLAN_FACTION_WEAK_TO_ABORT,
+// CANCEL_COMBAT_* and unit-training/equipment reserve thresholds which never block empty-tile advances!
+const OFF_NDEF_ATK_HEAVY_DEF_LIM: usize = 0x4593f38;   // fp64 (50_000 -> 95_000)
+const OFF_NDEF_PLAN_VAL_EXECUTE: usize = 0x4593008;    // fp64 signed (-50_000 -> -10_000)
+const OFF_NDEF_LOC_BAL_ADVANCE: usize = 0x4592bf8;     // fp64 (> 0 -> 0, Sheep AI: advance cleanly into open tiles)
+const OFF_NDEF_STR_UNIT_WEAK: usize = 0x4593548;       // fp64 (30_000 -> 50_000)
+const OFF_NDEF_ORG_UNIT_WEAK: usize = 0x4593558;       // fp64 (25_000 -> 35_000)
+const OFF_NDEF_PLAN_WEAK_ABORT: usize = 0x45935a8;     // fp64 (65_000 -> 45_000)
+const OFF_NDEF_CANCEL_DISADV_RAT: usize = 0x4593f48;   // fp64 (150_000 -> 115_000)
+const OFF_NDEF_CANCEL_MIN_DUR_HR: usize = 0x4593f58;   // i32  (48 -> 12)
+const OFF_NDEF_DESP_WEAK_STR_LIM: usize = 0x4594a18;   // fp64 (35_000 -> 65_000)
+const OFF_NDEF_MIN_FIELD_STR_BLD: usize = 0x4594048;   // fp64 (70_000 -> 88_000: halt division spam during deficit)
+const OFF_NDEF_START_TRAIN_EQ: usize = 0x45939f8;      // fp64 (40_000 -> 85_000)
+const OFF_NDEF_STOP_TRAIN_EQ: usize = 0x4593a08;       // fp64 (25_000 -> 75_000: stop burning rifles in exercises)
+const OFF_NDEF_DEPLOY_MIN_EQ_WAR: usize = 0x4592ab8;   // fp64 (85_000 -> 90_000)
+const OFF_NDEF_PROD_EQ_SURPLUS: usize = 0x45929d8;     // fp64 (80_000 -> 100_000)
+const OFF_NDEF_FRONT_EVAL_ACC: usize = 0x45951c8;      // fp64 (100_000 -> 150_000)
+const OFF_NDEF_FRONT_EVAL_AIR: usize = 0x45951d8;      // fp64 (100_000 -> 200_000)
+const OFF_NDEF_FRONT_EVAL_SUPLCK: usize = 0x45951e8;   // fp64 (100_000 -> 150_000)
+const OFF_NDEF_TERRAIN_IMPORT: usize = 0x4594778;      // fp64 (1_000_000)
+const OFF_NDEF_TANKS_MOUNTAINS: usize = 0x4594758;     // fp64 signed (-> -1_500_000)
+const OFF_NDEF_TANKS_JUNGLE: usize = 0x4594768;        // fp64 signed (-> -2_000_000)
+const OFF_NDEF_ENTRENCH_WEIGHT: usize = 0x45934d8;     // fp64 (200_000 -> 220_000: gentle, avoids freezing advances)
+const OFF_NDEF_ENCIRCLE_DISC_HRS: usize = 0x4593af8;   // i32  (72 -> 24)
+const OFF_NDEF_BULGE_LOW_CUTOFF: usize = 0x45940e8;    // fp64 (95_000 -> 120_000)
+const OFF_NDEF_BULGE_HIGH_CUTOFF: usize = 0x45940d8;   // fp64 (150_000 -> 180_000)
+const OFF_NDEF_CUTOFF_EDGE_PROX: usize = 0x45940f8;    // i32  (2 -> 1)
+const OFF_NDEF_MAX_MICRO_ATKS: usize = 0x4593c78;      // i32  (3 -> 5)
+const OFF_NDEF_MICRO_INACT_VAL: usize = 0x4593f88;     // fp64 (25_000 -> 15_000)
+const OFF_NDEF_AIFC_UPD_DAYS: usize = 0x4595ec8;       // i32  (5 -> 4)
+const OFF_NDEF_AIFC_UNIT_RATIO: usize = 0x4595f18;     // fp64 (15_000 -> 22_000)
+const OFF_NDEF_AIFC_ACTIVATE_ORG: usize = 0x4595f48;   // fp64 (20_000 -> 30_000)
+const OFF_NDEF_AIFC_NUDGE_DAYS: usize = 0x4595f78;     // i32  (15 -> 10)
+const OFF_NDEF_AIFC_HARDNESS: usize = 0x4595fd8;       // fp64 (30_000_000 -> 80_000_000)
+const OFF_NDEF_AIFC_ARMOR: usize = 0x4595fb8;          // fp64 (3_000_000 -> 8_000_000)
+const OFF_NDEF_AIFC_SOFT_ATK: usize = 0x4595f98;       // fp64 (600_000 -> 1_200_000)
+const OFF_NDEF_AIFC_HARD_ATK: usize = 0x4595fa8;       // fp64 (800_000 -> 1_600_000)
+const OFF_NDEF_AIFC_EXPERIENCE: usize = 0x4596048;     // fp64 (30_000_000 -> 50_000_000)
+const OFF_NDEF_AIFC_TGT_SUPPLY: usize = 0x4596068;     // fp64 (2_000_000 -> 3_000_000)
+const OFF_NDEF_AIFC_TGT_PORT: usize = 0x4596078;       // fp64 (1_000_000 -> 1_500_000)
+const OFF_NDEF_AIFC_TGT_PORT_LVL: usize = 0x4596088;   // fp64 (100_000 -> 200_000)
+const OFF_NDEF_AIFC_COST_MTN: usize = 0x4596128;       // fp64 (300_000 -> 400_000)
+
+// v1.2: Smart Peace Conference Anti-Bordergore (CPeaceWinnerAi::CalcStateActionScore + CPeaceConference::IsStateClaimedBy)
+const OFF_PEACE_CALC_STATE_SCORE: usize = 0xeafef0;
+const OFF_PEACE_IS_STATE_CLAIMED: usize = 0xe8af30;
+const OFF_STATE_DATA_PTR: usize = 0x20;
+const OFF_STATE_CORES_DATA: usize = 0xb0;
+const OFF_STATE_CORES_LEN: usize = 0xbc;
+const OFF_STATE_OWNER_TAG: usize = 0xc8;
+const OFF_STATEDATA_NEIGHBORS_DATA: usize = 0x108;
+const OFF_STATEDATA_NEIGHBORS_LEN: usize = 0x114;
+const OFF_STATEDATA_IS_COASTAL: usize = 0x155;
+const PEACE_ACT_TAKE_STATES: i32 = 0x30cf;
+const PEACE_ACT_GIVE_STATES: i32 = 0x29e6;
+const PEACE_ACT_PUPPET: i32 = 0x30d1;
+const OFF_NDEF_PEACE_FOLD_TURNS: usize = 0x45957f8;    // i32  (2 -> 1)
+const OFF_NDEF_PEACE_TIE_DIST: usize = 0x4595818;      // fp64 (100_000 -> 400_000)
 
 // v1.0: Peaceful minor AI hourly throttling (CCountryAI vtable & CCountry field offsets)
 const OFF_COUNTRY_AI_VT: usize = 0x434b3b8;
@@ -212,6 +243,11 @@ const SIG_GET_BLDG_QUEUE_PRIO: [u8; 20] = [
     0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x81,
     0xec, 0xd8, 0x00, 0x00, 0x00,
 ];
+const SIG_PEACE_CALC_STATE_SCORE: [u8; 20] = [
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x81,
+    0xec, 0xf8, 0x00, 0x00, 0x00,
+];
+const SIG_PEACE_IS_STATE_CLAIMED: [u8; 8] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x8f, 0xf0];
 
 // ============================================================================
 // Raw Linux libc / syscalls (zero external crate dependencies)
@@ -305,6 +341,18 @@ type PdxFreeFn = unsafe extern "C" fn(*mut u8, *mut u8);
 type CwSetupExecFn = unsafe extern "C" fn(*mut u8, *mut u8, u8);
 type IdlerMapRebuildFn = unsafe extern "C" fn(*mut u8) -> u8;
 type GetBldgQueuePrioFn = unsafe extern "C" fn(*mut u8, *const u8) -> i64;
+type PeaceCalcStateScoreFn = unsafe extern "C" fn(
+    *const u8,
+    *const i32,
+    *const i32,
+    *const i32,
+    i32,
+    i32,
+    usize,
+    usize,
+    usize,
+) -> i64;
+type PeaceIsStateClaimedFn = unsafe extern "C" fn(*const u8, i32, *const i32) -> u8;
 type CountryAiPassFn = unsafe extern "C" fn(*mut u8, usize, usize);
 type OwnerAccessCountryFn = unsafe extern "C" fn(*mut u8) -> *mut u8;
 type CountryHasHumanFn = unsafe extern "C" fn(*mut u8) -> u8;
@@ -527,8 +575,8 @@ static TSC_PER_MS: AtomicU64 = AtomicU64::new(0);
 static TSC_CAL_NS: AtomicU64 = AtomicU64::new(0);
 static TSC_CAL_TSC: AtomicU64 = AtomicU64::new(0);
 
-// Breakthrough 5: Lock-Free error.log Spam Deduplicator (SetLogger @ 0x361bec0)
-const LOG_DEDUP_CAP: usize = 2048;
+// Breakthrough 5: Lock-Free error.log Spam Deduplicator v2 (SetLogger @ 0x361bec0)
+const LOG_DEDUP_CAP: usize = 8192;
 const LOG_VT_CAP: usize = 16;
 struct LogDedupSlot {
     hash: AtomicU64,
@@ -595,9 +643,15 @@ static AI_SMART_AIRBASE_DEFINES_APPLIED: AtomicBool = AtomicBool::new(false);
 static ORIG_GET_BLDG_QUEUE_PRIO: AtomicUsize = AtomicUsize::new(0);
 static AIRBASE_PRIO_BOOSTS: AtomicU64 = AtomicU64::new(0);
 
-// v1.1 Module 15: Tactical Prudence & AIFC Spearheads (Sheep AI / Discord AI Non-Cheating Core)
+// v1.1 -> v1.2 Module 15: Tactical Prudence, Equipment Conservation & AIFC Spearheads
 static AI_TACTICAL_PRUDENCE_ENABLED: AtomicBool = AtomicBool::new(false);
 static AI_TACTICAL_PRUDENCE_APPLIED: AtomicBool = AtomicBool::new(false);
+
+// v1.2 Module 16: Smart Peace Conference Anti-Bordergore (CPeaceWinnerAi::CalcStateActionScore)
+static AI_SMART_PEACE_ENABLED: AtomicBool = AtomicBool::new(false);
+static AI_SMART_PEACE_DEFINES_APPLIED: AtomicBool = AtomicBool::new(false);
+static ORIG_PEACE_CALC_STATE_SCORE: AtomicUsize = AtomicUsize::new(0);
+static PEACE_BORDERGORE_ADJUSTS: AtomicU64 = AtomicU64::new(0);
 
 // v1.0 Module 14: Dormant Peaceful Minor AI Hourly Throttling
 static AI_THROTTLE_MINORS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -647,6 +701,11 @@ unsafe extern "C" fn hook_session_update(app: *mut u8) {
                 && !AI_TACTICAL_PRUDENCE_APPLIED.load(Ordering::Relaxed)
             {
                 unsafe { apply_ai_tactical_prudence_once(pie_for_state) };
+            }
+            if AI_SMART_PEACE_ENABLED.load(Ordering::Relaxed)
+                && !AI_SMART_PEACE_DEFINES_APPLIED.load(Ordering::Relaxed)
+            {
+                unsafe { apply_ai_smart_peace_once(pie_for_state) };
             }
         }
     }
@@ -730,8 +789,9 @@ unsafe extern "C" fn hook_session_update(app: *mut u8) {
             }
             let speed = unsafe { *(gs.add(OFF_GS_GAME_SPEED) as *const i32) };
             let paused = unsafe { *gs.add(OFF_GS_PAUSED) };
-            // Strictly Speed 5 (index 4) and unpaused (0)!
-            if speed != 4 || paused != 0 {
+            let num_players = unsafe { *(gs.add(OFF_GS_NUM_PLAYERS) as *const i32) };
+            // Strictly Speed 5 (index 4), unpaused (0), and singleplayer (num_players <= 1)!
+            if speed != 4 || paused != 0 || num_players > 1 {
                 break;
             }
             let bt0 = now_ns();
@@ -846,12 +906,12 @@ unsafe extern "C" fn hook_should_render_mid_tick(idler: *const u8, game_speed: c
 }
 
 // ============================================================================
-// Breakthrough 5: Lock-Free error.log Spam Deduplicator (SetLogger @ 0x361bec0)
+// Breakthrough 5: Lock-Free error.log Spam Deduplicator v2 (SetLogger @ 0x361bec0)
 // ============================================================================
-// Collapses repeated script/localisation/mod errors (such as Paradox's 128k+
-// RU_loc.txt Invalid Scope spam) while preserving the first 8 entries per unique
-// error pattern so real startup/crash diagnostics remain intact.
-fn fnv1a_log_sig(level: c_int, file: *const StdString, line: c_int, msg: *const StdString) -> u64 {
+// Collapses repeated script/localisation/mod errors (such as Paradox's 100 MB+
+// RU_loc.txt Invalid Scope spam across 15,000+ script line numbers) while preserving
+// the first 8 entries per unique error pattern so real startup/crash diagnostics remain intact.
+fn fnv1a_log_sig(level: c_int, file: *const StdString, msg: *const StdString) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     let mix = |h: &mut u64, b: u8| {
         *h ^= b as u64;
@@ -860,23 +920,30 @@ fn fnv1a_log_sig(level: c_int, file: *const StdString, line: c_int, msg: *const 
     for b in level.to_le_bytes() {
         mix(&mut h, b);
     }
-    for b in line.to_le_bytes() {
-        mix(&mut h, b);
-    }
+    // NOTE: Do NOT hash `line` — HoI4 passes script file line numbers (e.g. 1..87000+ in RU_loc.txt)
+    // in `line`, which would otherwise explode unique patterns and overflow the dedup table!
     if !file.is_null() {
         let f = unsafe { &*file };
         if !f.ptr.is_null() {
-            let n = f.len.min(64);
+            let n = f.len.min(128);
             let slice = unsafe { std::slice::from_raw_parts(f.ptr, n) };
+            let mut kept = 0usize;
             for &b in slice {
+                if b.is_ascii_digit() {
+                    continue;
+                }
                 mix(&mut h, b);
+                kept += 1;
+                if kept >= 64 {
+                    break;
+                }
             }
         }
     }
     if !msg.is_null() {
         let m = unsafe { &*msg };
         if !m.ptr.is_null() {
-            let n = m.len.min(140);
+            let n = m.len.min(160);
             let slice = unsafe { std::slice::from_raw_parts(m.ptr, n) };
             let mut kept = 0usize;
             for &b in slice {
@@ -895,7 +962,7 @@ fn fnv1a_log_sig(level: c_int, file: *const StdString, line: c_int, msg: *const 
     if h == 0 { 1 } else { h }
 }
 
-fn should_allow_log(sig: u64) -> bool {
+fn should_allow_log(sig: u64, level: c_int) -> bool {
     const MAX_PER_PATTERN: u32 = 8;
     let mut idx = (sig as usize) & (LOG_DEDUP_CAP - 1);
     for _ in 0..32 {
@@ -913,7 +980,8 @@ fn should_allow_log(sig: u64) -> bool {
         }
         idx = (idx + 1) & (LOG_DEDUP_CAP - 1);
     }
-    true
+    // If table probe window saturates, still allow low-level critical/info (< 3) but block warning/error floods
+    level < 3
 }
 
 unsafe extern "C" fn hook_logger_write(
@@ -944,9 +1012,9 @@ unsafe extern "C" fn hook_logger_write(
         return;
     }
 
-    // Deduplicate repetitive error/warning spam (level >= 3), always allow critical/info if low-volume
-    let sig = fnv1a_log_sig(level, file, line, msg);
-    if !should_allow_log(sig) {
+    // Deduplicate repetitive error/warning spam (line-number immune across script files)
+    let sig = fnv1a_log_sig(level, file, msg);
+    if !should_allow_log(sig, level) {
         LOG_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -1567,8 +1635,9 @@ unsafe fn apply_ai_smart_airbase_once(pie: usize) {
 }
 
 // ============================================================================
-// v1.1 Module 15: Tactical Prudence & Force Concentration (Sheep AI / Discord AI)
+// v1.1 -> v1.2 Module 15: Tactical Prudence, Equipment Conservation & AIFC Spearheads
 // Strictly adjusts NDefines::NAI decision weights (zero player/combat cheats).
+// Never raises PLAN_ATTACK_MIN_STRENGTH so empty-tile advances are never blocked!
 // ============================================================================
 unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     if AI_TACTICAL_PRUDENCE_APPLIED
@@ -1577,9 +1646,9 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     {
         return;
     }
-    let sanity_str = unsafe { *((pie + OFF_NDEF_ATK_MIN_STR_LOW) as *const i64) };
+    let sanity_def = unsafe { *((pie + OFF_NDEF_ATK_HEAVY_DEF_LIM) as *const i64) };
     let sanity_enc = unsafe { *((pie + OFF_NDEF_ENCIRCLE_DISC_HRS) as *const i32) };
-    if sanity_str <= 0 || sanity_enc <= 0 {
+    if sanity_def <= 0 || sanity_enc <= 0 {
         return;
     }
 
@@ -1621,25 +1690,34 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     };
 
     let mut changed = 0usize;
-    // 1. Stop suicidal low-strength grinding & abort losing attacks in 20h instead of 48h
-    changed += raise_fp64(OFF_NDEF_ATK_MIN_STR_LOW, 75_000);    // 0.60 -> 0.75 (Sheep AI)
-    changed += raise_fp64(OFF_NDEF_ATK_MIN_STR_MED, 65_000);    // 0.50 -> 0.65 (Sheep AI)
-    changed += raise_fp64(OFF_NDEF_ATK_MIN_ORG_HIGH, 52_000);   // 0.45 -> 0.52
-    changed += raise_fp64(OFF_NDEF_ATK_MIN_STR_HIGH, 50_000);   // 0.30 -> 0.50 (Sheep AI: stop 30% strength divisions melting)
-    changed += lower_fp64(OFF_NDEF_CANCEL_DISADV_RAT, 125_000); // 1.50 -> 1.25
-    changed += lower_i32(OFF_NDEF_CANCEL_MIN_DUR_HR, 20);       // 48h  -> 20h
-    changed += raise_fp64(OFF_NDEF_DESP_WEAK_STR_LIM, 65_000);  // 0.35 -> 0.65
+    // 1. Stop suicidal attacks into defended stacks & abort losing meatgrinders in 12h (never blocks empty tiles!)
+    changed += raise_fp64(OFF_NDEF_ATK_HEAVY_DEF_LIM, 95_000);   // 0.50 -> 0.95 (refuse bad odds vs fortified/entrenched tiles; empty tile def=0!)
+    changed += raise_fp64(OFF_NDEF_PLAN_VAL_EXECUTE, -10_000);   // -0.50 -> -0.10 (stop launching hopeless front-wide suicide plans)
+    changed += lower_fp64(OFF_NDEF_LOC_BAL_ADVANCE, 0);          // >0   -> 0.00 (Sheep AI: step into empty/weak tiles without hesitation)
+    changed += raise_fp64(OFF_NDEF_STR_UNIT_WEAK, 50_000);       // 0.30 -> 0.50 (mark under-equipped divisions weak before they melt)
+    changed += raise_fp64(OFF_NDEF_ORG_UNIT_WEAK, 35_000);       // 0.25 -> 0.35
+    changed += lower_fp64(OFF_NDEF_PLAN_WEAK_ABORT, 45_000);     // 0.65 -> 0.45 (abort offensive plans once 45% of army drops below 50% str)
+    changed += lower_fp64(OFF_NDEF_CANCEL_DISADV_RAT, 115_000);  // 1.50 -> 1.15 (abort losing combats fast)
+    changed += lower_i32(OFF_NDEF_CANCEL_MIN_DUR_HR, 12);        // 48h  -> 12h  (save guns instead of grinding 2 days into forts)
+    changed += raise_fp64(OFF_NDEF_DESP_WEAK_STR_LIM, 65_000);   // 0.35 -> 0.65
 
-    // 2. Smarter front assessment, terrain discipline & entrenchment preservation
+    // 2. Equipment Stockpile Discipline (prevent deep negative rifle/equipment death spiral)
+    changed += raise_fp64(OFF_NDEF_MIN_FIELD_STR_BLD, 88_000);   // 0.70 -> 0.88 (pause new division spam until field army >= 88% equipped)
+    changed += raise_fp64(OFF_NDEF_START_TRAIN_EQ, 85_000);      // 0.40 -> 0.85
+    changed += raise_fp64(OFF_NDEF_STOP_TRAIN_EQ, 75_000);       // 0.25 -> 0.75 (stop exercising & burning equipment when stockpile < 75%)
+    changed += raise_fp64(OFF_NDEF_DEPLOY_MIN_EQ_WAR, 90_000);   // 0.85 -> 0.90 (avoid deploying half-equipped divisions into combat)
+    changed += raise_fp64(OFF_NDEF_PROD_EQ_SURPLUS, 100_000);    // 0.80 -> 1.00 (maintain full equipment reserve buffer)
+
+    // 3. Smarter front assessment & terrain discipline (gentle entrenchment weight so divisions stay fluid)
     changed += raise_fp64(OFF_NDEF_FRONT_EVAL_ACC, 150_000);     // 1.00 -> 1.50 (Sheep AI)
     changed += raise_fp64(OFF_NDEF_FRONT_EVAL_AIR, 200_000);     // 1.00 -> 2.00 (Sheep AI: respect air superiority)
     changed += raise_fp64(OFF_NDEF_FRONT_EVAL_SUPLCK, 150_000);  // 1.00 -> 1.50 (Sheep AI: avoid overstacking low-supply pockets)
     changed += raise_fp64(OFF_NDEF_TERRAIN_IMPORT, 1_000_000);   // >= 10.0
     changed += lower_fp64(OFF_NDEF_TANKS_MOUNTAINS, -1_500_000); // <= -15.0 (Sheep AI: keep tanks out of mountains)
     changed += lower_fp64(OFF_NDEF_TANKS_JUNGLE, -2_000_000);    // <= -20.0 (Sheep AI: keep tanks out of jungles)
-    changed += raise_fp64(OFF_NDEF_ENTRENCH_WEIGHT, 400_000);    // 2.0  -> 4.0  (Sheep AI: stop shuffling dug-in line infantry)
+    changed += raise_fp64(OFF_NDEF_ENTRENCH_WEIGHT, 220_000);    // 2.0  -> 2.2  (v1.2: lowered from 4.0 to stop gluing divisions in place)
 
-    // 3. Daily pocket/bulge detection & weak-point micro-attacks
+    // 4. Daily pocket/bulge detection & weak-point micro-attacks
     changed += lower_i32(OFF_NDEF_ENCIRCLE_DISC_HRS, 24);        // 72h  -> 24h (daily encirclement discovery)
     changed += raise_fp64(OFF_NDEF_BULGE_LOW_CUTOFF, 120_000);   // 0.95 -> 1.20 (Sheep AI)
     changed += raise_fp64(OFF_NDEF_BULGE_HIGH_CUTOFF, 180_000);  // 1.50 -> 1.80 (Sheep AI)
@@ -1647,10 +1725,10 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     changed += raise_i32(OFF_NDEF_MAX_MICRO_ATKS, 5);            // 3    -> 5    (Sheep AI: opportunistic weak-point probes)
     changed += lower_fp64(OFF_NDEF_MICRO_INACT_VAL, 15_000);     // 0.25 -> 0.15 (Sheep AI)
 
-    // 4. Armored/Shock Force Concentration (AIFC — Sheep AI / Discord AI spearheads)
+    // 5. Armored/Shock Force Concentration (AIFC — Sheep AI / Discord AI spearheads)
     changed += lower_i32(OFF_NDEF_AIFC_UPD_DAYS, 4);             // 5d   -> 4d
     changed += raise_fp64(OFF_NDEF_AIFC_UNIT_RATIO, 22_000);     // 0.15 -> 0.22 (22% shock spearhead allocation)
-    changed += raise_fp64(OFF_NDEF_AIFC_ACTIVATE_ORG, 42_000);   // 0.20 -> 0.42 (wait for 42% org before launching spearhead!)
+    changed += raise_fp64(OFF_NDEF_AIFC_ACTIVATE_ORG, 30_000);   // 0.20 -> 0.30 (v1.2: balanced from 0.42 so spearheads actually roll)
     changed += lower_i32(OFF_NDEF_AIFC_NUDGE_DAYS, 10);          // 15d  -> 10d
     changed += raise_fp64(OFF_NDEF_AIFC_HARDNESS, 80_000_000);   // 300  -> 800  (Sheep AI: pack armor/mech into spearheads)
     changed += raise_fp64(OFF_NDEF_AIFC_ARMOR, 8_000_000);       // 30   -> 80   (Sheep AI)
@@ -1663,7 +1741,195 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     changed += raise_fp64(OFF_NDEF_AIFC_COST_MTN, 400_000);      // 3.0  -> 4.0  (Sheep AI: route spearheads around mountains)
 
     eprintln!(
-        "[hoi4-rust-accel] AI Tactical Prudence & AIFC Spearheads active ({}/33 Sheep-AI-based non-cheating NAI defines tuned)",
+        "[hoi4-rust-accel] AI Tactical Prudence v2 & Equipment Conservation active ({}/40 non-cheating NAI defines tuned; empty-tile advances unblocked)",
+        changed
+    );
+}
+
+// ============================================================================
+// v1.2 Module 16: Smart Peace Conference Anti-Bordergore
+// Hooks CPeaceWinnerAi::CalcStateActionScore (0xeafef0) so AI strongly prefers
+// contiguous states adjacent to its own territory or states already claimed
+// earlier in the same peace conference (3x..5x), and avoids inland enclaves (-95%)
+// and scattered coastal snipes (-75% until beachhead expands), while never
+// penalizing a country's own cores!
+// ============================================================================
+unsafe fn adjust_peace_bordergore_score(
+    pie: usize,
+    conf: *const u8,
+    taker: *const i32,
+    negotiator: *const i32,
+    state_id: i32,
+    action_type: i32,
+    score: i64,
+) -> i64 {
+    if score <= 0 || pie == 0 || conf.is_null() || taker.is_null() || state_id < 1 {
+        return score;
+    }
+    let is_take = action_type == PEACE_ACT_TAKE_STATES || action_type == PEACE_ACT_GIVE_STATES;
+    let is_puppet = action_type == PEACE_ACT_PUPPET;
+    if !is_take && !is_puppet {
+        return score;
+    }
+    let taker_tag = unsafe { *taker };
+    if taker_tag <= 0 {
+        return score;
+    }
+    let gs = unsafe { *((pie + OFF_GAMESTATE_PTR) as *const *const u8) };
+    if gs.is_null() {
+        return score;
+    }
+    let n_states = unsafe { *(gs.add(OFF_GS_STATES_LEN) as *const i32) };
+    if state_id >= n_states {
+        return score;
+    }
+    let states_arr = unsafe { *(gs.add(OFF_GS_STATES_DATA) as *const *const *const u8) };
+    if states_arr.is_null() {
+        return score;
+    }
+    let state = unsafe { *states_arr.add(state_id as usize) };
+    if state.is_null() {
+        return score;
+    }
+
+    // Never penalize a nation reclaiming its own core state (e.g. East Prussia / Alsace / Warsaw)
+    let core_len = unsafe { *(state.add(OFF_STATE_CORES_LEN) as *const i32) };
+    if core_len > 0 {
+        let cores = unsafe { *(state.add(OFF_STATE_CORES_DATA) as *const *const i32) };
+        if !cores.is_null() {
+            let cap = (core_len as usize).min(64);
+            for i in 0..cap {
+                if unsafe { *cores.add(i) } == taker_tag {
+                    return score;
+                }
+            }
+        }
+    }
+
+    let state_data = unsafe { *(state.add(OFF_STATE_DATA_PTR) as *const *const u8) };
+    if state_data.is_null() {
+        return score;
+    }
+    let is_coastal = unsafe { *state_data.add(OFF_STATEDATA_IS_COASTAL) } != 0;
+    let nb_len = unsafe { *(state_data.add(OFF_STATEDATA_NEIGHBORS_LEN) as *const i32) };
+    let nb_ptr = unsafe { *(state_data.add(OFF_STATEDATA_NEIGHBORS_DATA) as *const *const i32) };
+    let is_claimed: PeaceIsStateClaimedFn =
+        unsafe { std::mem::transmute(pie + OFF_PEACE_IS_STATE_CLAIMED) };
+
+    let neg_tag = if is_puppet && !negotiator.is_null() {
+        let t = unsafe { *negotiator };
+        if t > 0 && t != taker_tag { t } else { 0 }
+    } else {
+        0
+    };
+
+    let mut adj_taker: i32 = 0;
+    let mut adj_overlord: i32 = 0;
+    if nb_len > 0 && !nb_ptr.is_null() {
+        let cap = (nb_len as usize).min(64);
+        for i in 0..cap {
+            let nb_id = unsafe { *nb_ptr.add(i) };
+            if nb_id < 1 || nb_id >= n_states {
+                continue;
+            }
+            let nb_state = unsafe { *states_arr.add(nb_id as usize) };
+            if nb_state.is_null() {
+                continue;
+            }
+            let nb_owner = unsafe { *(nb_state.add(OFF_STATE_OWNER_TAG) as *const i32) };
+            if nb_owner == taker_tag || unsafe { is_claimed(conf, nb_id, taker) } != 0 {
+                adj_taker += 1;
+            } else if neg_tag > 0
+                && (nb_owner == neg_tag || unsafe { is_claimed(conf, nb_id, negotiator) } != 0)
+            {
+                adj_overlord += 1;
+            }
+        }
+    }
+
+    const MAX_SAFE_SCORE: i64 = 1_000_000_000_000_000;
+    let adjusted = if adj_taker >= 1 {
+        // Contiguous to owned or already-claimed state: 3x (1 nb), 4x (2 nbs), 5x (3+ nbs)
+        let mult = (2 + adj_taker.min(3)) as i64;
+        if score < (MAX_SAFE_SCORE / mult) {
+            score * mult
+        } else {
+            MAX_SAFE_SCORE
+        }
+    } else if is_puppet && adj_overlord >= 1 {
+        // First puppet state next to its overlord: 2.5x
+        if score < (MAX_SAFE_SCORE / 5) {
+            (score * 5) / 2
+        } else {
+            MAX_SAFE_SCORE
+        }
+    } else if is_coastal {
+        // Non-adjacent coastal foothold: 0.25x (strongly preferred over inland enclave on Turn 1,
+        // then Turn 2+ contiguous beachhead expansion wins by 12x..20x!)
+        (score / 4).max(1)
+    } else {
+        // Disconnected inland enclave: -95% penalty (still >= 1 as last-resort fallback)
+        (score / 20).max(1)
+    };
+
+    PEACE_BORDERGORE_ADJUSTS.fetch_add(1, Ordering::Relaxed);
+    adjusted
+}
+
+unsafe extern "C" fn hook_peace_calc_state_score(
+    conf: *const u8,
+    taker: *const i32,
+    giver: *const i32,
+    negotiator: *const i32,
+    state_id: i32,
+    action_type: i32,
+    extra1: usize,
+    extra2: usize,
+    debug_str: usize,
+) -> i64 {
+    let orig: PeaceCalcStateScoreFn =
+        unsafe { std::mem::transmute(ORIG_PEACE_CALC_STATE_SCORE.load(Ordering::Relaxed)) };
+    let score = unsafe {
+        orig(
+            conf,
+            taker,
+            giver,
+            negotiator,
+            state_id,
+            action_type,
+            extra1,
+            extra2,
+            debug_str,
+        )
+    };
+    let pie = PIE_BASE.load(Ordering::Relaxed);
+    unsafe {
+        adjust_peace_bordergore_score(pie, conf, taker, negotiator, state_id, action_type, score)
+    }
+}
+
+unsafe fn apply_ai_smart_peace_once(pie: usize) {
+    if AI_SMART_PEACE_DEFINES_APPLIED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let mut changed = 0usize;
+    unsafe {
+        let fold_ptr = (pie + OFF_NDEF_PEACE_FOLD_TURNS) as *mut i32;
+        if *fold_ptr > 1 {
+            *fold_ptr = 1;
+            changed += 1;
+        }
+        let dist_ptr = (pie + OFF_NDEF_PEACE_TIE_DIST) as *mut i64;
+        if *dist_ptr > 0 && *dist_ptr < 400_000 {
+            *dist_ptr = 400_000; // 1.0 -> 4.0 distance tie-breaker
+            changed += 1;
+        }
+    }
+    eprintln!(
+        "[hoi4-rust-accel] AI Smart Peace active: contiguous border scoring (3x..5x / -95% inland enclaves) + {}/2 peace defines tuned",
         changed
     );
 }
@@ -2414,6 +2680,8 @@ fn reset_stats() {
     SLAB_FREE_HITS.store(0, Ordering::Relaxed);
     SLAB_FALLBACKS.store(0, Ordering::Relaxed);
     CW_REBUILDS_COALESCED.store(0, Ordering::Relaxed);
+    AIRBASE_PRIO_BOOSTS.store(0, Ordering::Relaxed);
+    PEACE_BORDERGORE_ADJUSTS.store(0, Ordering::Relaxed);
     MINOR_AI_SKIPPED.store(0, Ordering::Relaxed);
     MINOR_AI_EXECUTED.store(0, Ordering::Relaxed);
 }
@@ -2660,7 +2928,7 @@ fn emit_report(measured_hours: u64) {
     zones.sort_by(|a, b| b.2.cmp(&a.2));
 
     let mut out = String::new();
-    out.push_str("\n================ HOI4 RUST ACCEL v1.1 REPORT ================\n");
+    out.push_str("\n================ HOI4 RUST ACCEL v1.2 REPORT ================\n");
     out.push_str(&format!(
         "Measured Hours : {} ({:.2} game days)\n",
         measured_hours,
@@ -2679,7 +2947,7 @@ fn emit_report(measured_hours: u64) {
     let tf_fps = if tf_ns > 0 { 1_000_000_000 / tf_ns } else { 0 };
     let sf_fps = SMOOTH_FPS.load(Ordering::Relaxed);
     out.push_str(&format!(
-        "Config         : target_fps={} smooth_fps={} fast_alloc={} fast_mod={} country_grain={} civil_war_fix={} ai_smart_supply={} ai_smart_airbase={} ai_tactical_prudence={} ai_throttle_minors={} fast_sched={} fast_wait={} fast_yield={} fast_event={} no_job_clock={} affinity={} quiet_log={} fast_save={} no_telemetry={}\n",
+        "Config         : target_fps={} smooth_fps={} fast_alloc={} fast_mod={} country_grain={} civil_war_fix={} ai_smart_supply={} ai_smart_airbase={} ai_tactical_prudence={} ai_smart_peace={} ai_throttle_minors={} fast_sched={} fast_wait={} fast_yield={} fast_event={} no_job_clock={} affinity={} quiet_log={} fast_save={} no_telemetry={}\n",
         tf_fps,
         sf_fps,
         FAST_ALLOC_ENABLED.load(Ordering::Relaxed),
@@ -2689,6 +2957,7 @@ fn emit_report(measured_hours: u64) {
         AI_SMART_SUPPLY_ENABLED.load(Ordering::Relaxed),
         AI_SMART_AIRBASE_ENABLED.load(Ordering::Relaxed),
         AI_TACTICAL_PRUDENCE_ENABLED.load(Ordering::Relaxed),
+        AI_SMART_PEACE_ENABLED.load(Ordering::Relaxed),
         AI_THROTTLE_MINORS_ENABLED.load(Ordering::Relaxed),
         FAST_SCHED_ENABLED.load(Ordering::Relaxed),
         FAST_TASK_WAIT_ENABLED.load(Ordering::Relaxed),
@@ -2799,8 +3068,14 @@ fn emit_report(measured_hours: u64) {
     }
     if AI_TACTICAL_PRUDENCE_ENABLED.load(Ordering::Relaxed) {
         out.push_str(&format!(
-            "TacticalAI     : Sheep-AI-based prudence & AIFC spearheads active (applied={})\n",
+            "TacticalAI     : Sheep-AI v2 prudence & equipment conservation active (applied={})\n",
             AI_TACTICAL_PRUDENCE_APPLIED.load(Ordering::Relaxed)
+        ));
+    }
+    if AI_SMART_PEACE_ENABLED.load(Ordering::Relaxed) {
+        out.push_str(&format!(
+            "SmartPeace     : {} peace conference state scores adjusted for border contiguity\n",
+            PEACE_BORDERGORE_ADJUSTS.load(Ordering::Relaxed)
         ));
     }
     if AI_THROTTLE_MINORS_ENABLED.load(Ordering::Relaxed) {
@@ -3155,7 +3430,7 @@ unsafe extern "C" fn hoi4_accel_init() {
         });
 
     eprintln!(
-        "[hoi4-rust-accel v1.1] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
+        "[hoi4-rust-accel v1.2] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
         std::process::id(),
         base,
         preset
@@ -3204,6 +3479,29 @@ unsafe extern "C" fn hoi4_accel_init() {
     if want_ai_tactical_prudence {
         AI_TACTICAL_PRUDENCE_ENABLED.store(true, Ordering::Release);
     }
+    let mut want_ai_smart_peace =
+        !noop_mode && cfg_bool("HOI4_ACCEL_AI_SMART_PEACE", "ai_smart_peace", def_core);
+    if want_ai_smart_peace {
+        if unsafe { verify_sig(base + OFF_PEACE_IS_STATE_CLAIMED, &SIG_PEACE_IS_STATE_CLAIMED) } {
+            if let Some(tramp_pc) = unsafe {
+                install_trampoline_hook(
+                    base + OFF_PEACE_CALC_STATE_SCORE,
+                    &SIG_PEACE_CALC_STATE_SCORE,
+                    hook_peace_calc_state_score as *const () as usize,
+                )
+            } {
+                ORIG_PEACE_CALC_STATE_SCORE.store(tramp_pc, Ordering::Release);
+                AI_SMART_PEACE_ENABLED.store(true, Ordering::Release);
+                eprintln!(
+                    "[hoi4-rust-accel] Enabled AiSmartPeace (anti-bordergore CPeaceWinnerAi::CalcStateActionScore @ 0xeafef0)"
+                );
+            } else {
+                want_ai_smart_peace = false;
+            }
+        } else {
+            want_ai_smart_peace = false;
+        }
+    }
 
     let bench_hrs = cfg_u64("HOI4_BENCH_HOURS", "bench_hours", 0);
     if bench_hrs > 0 {
@@ -3231,7 +3529,8 @@ unsafe extern "C" fn hoi4_accel_init() {
         || COLLECT_ZONES.load(Ordering::Relaxed)
         || want_ai_smart_supply
         || want_ai_smart_airbase
-        || want_ai_tactical_prudence;
+        || want_ai_tactical_prudence
+        || want_ai_smart_peace;
     if need_session_hook {
         let frame_ns = if target_fps >= 1 && target_fps <= 240 {
             1_000_000_000 / target_fps

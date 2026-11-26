@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# hoi4-rust-accel v1.1 launcher wrapper for Steam or standalone launch.
+# hoi4-rust-accel v1.2 launcher wrapper for Steam or standalone launch.
 # Reads settings from hoi4_accel.ini (in this folder) or HOI4_ACCEL_* env vars.
 #
 # Steam Launch Options (recommended):
-#   /home/gleb/.gemini/antigravity/scratch/hoi4-rust-accel/launch_hoi4.sh %command%
+#   /path/to/hoi4-accel/launch_hoi4.sh %command%
 #
 # Optional presets (place before the script path in Steam Launch Options):
 #   HOI4_ACCEL_PRESET=smooth    (default: steady 24-30+ FPS + 60 FPS camera + ~+20-25% speed + anti-freeze)
@@ -14,12 +14,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ACCEL_SO="$SCRIPT_DIR/target/release/libhoi4_rust_accel.so"
+# Prefer release-archive layout ($SCRIPT_DIR/libhoi4_rust_accel.so), fallback to dev build layout
+if [ -f "$SCRIPT_DIR/libhoi4_rust_accel.so" ]; then
+  ACCEL_SO="$SCRIPT_DIR/libhoi4_rust_accel.so"
+else
+  ACCEL_SO="$SCRIPT_DIR/target/release/libhoi4_rust_accel.so"
+fi
 JEMALLOC_SO="/usr/lib/libjemalloc.so.2"
 
 if [ ! -f "$ACCEL_SO" ]; then
-  echo "[hoi4-rust-accel] Missing $ACCEL_SO — rebuilding release binary..." >&2
-  (cd "$SCRIPT_DIR" && RUSTFLAGS="-C target-cpu=native" cargo build --release)
+  if [ -f "$SCRIPT_DIR/Cargo.toml" ]; then
+    echo "[hoi4-rust-accel] Missing $ACCEL_SO — rebuilding release binary..." >&2
+    (cd "$SCRIPT_DIR" && RUSTFLAGS="-C target-cpu=native" cargo build --release)
+  else
+    echo "[hoi4-rust-accel] ERROR: libhoi4_rust_accel.so not found in $SCRIPT_DIR" >&2
+    exit 1
+  fi
 fi
 
 PRELOAD="$ACCEL_SO"
