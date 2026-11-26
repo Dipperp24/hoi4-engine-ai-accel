@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hoi4-rust-accel v1.0 launcher wrapper for Steam or standalone launch.
+# hoi4-rust-accel v1.1 launcher wrapper for Steam or standalone launch.
 # Reads settings from hoi4_accel.ini (in this folder) or HOI4_ACCEL_* env vars.
 #
 # Steam Launch Options (recommended):

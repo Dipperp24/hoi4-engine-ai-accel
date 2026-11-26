@@ -1,5 +1,5 @@
 // ============================================================================
-// hoi4-accel v1.0-win64: Non-Destructive Windows x86_64 Engine & AI Accelerator
+// hoi4-accel v1.1-win64: Non-Destructive Windows x86_64 Engine & AI Accelerator
 // Target: Hearts of Iron IV v1.20.0.0.8873 (Operation Postern, PE32+ x86-64)
 //
 // Drop `version.dll` (and optional `hoi4_accel.ini`) next to `hoi4.exe`.
@@ -161,13 +161,61 @@ static constexpr uintptr_t RVA_INGAME_IDLER_VT        = 0x29ea628;
 static constexpr uintptr_t OFF_IDLER_MAP_REBUILD_SLOT = 0x238;
 static constexpr uintptr_t RVA_IDLER_MAP_REBUILD_FN   = 0x0b8fa80;
 
-// v1.0: NDefines::NAI & NDefines::NAITheatre supply/railway construction globals (.data)
+// v1.0 -> v1.1: NDefines::NAI & NDefines::NAITheatre supply/railway/motorization globals (.data)
 static constexpr uintptr_t RVA_NDEF_SUPPLY_FREQ_HRS   = 0x33e6124; // int32_t hours (vanilla 168)
 static constexpr uintptr_t RVA_NDEF_SUPPLY_SAT_THR    = 0x33e61c8; // int64_t CFixedPoint64 x100,000 (vanilla 85,000)
+static constexpr uintptr_t RVA_NDEF_SUPPLY_MOT_FREQ   = 0x33e6250; // int32_t hours (vanilla 52)
+static constexpr uintptr_t RVA_NDEF_DIV_SUPPLY_MOT    = 0x33e9c48; // int64_t CFixedPoint64 x100,000 (vanilla 80,000)
 static constexpr uintptr_t RVA_NDEF_PRIO_SUPPLY_BLDG  = 0x33e6510; // int64_t CFixedPoint64 x100,000 (vanilla 110,000)
 static constexpr uintptr_t RVA_NDEF_PRIO_RAILWAY      = 0x33e65d8; // int64_t CFixedPoint64 x100,000 (vanilla 400,000)
 static constexpr uintptr_t RVA_NDEF_SUPPLY_MAX_DEPTH  = 0x33e79a8; // int64_t CFixedPoint64 x100,000 (vanilla 500,000)
 static constexpr uintptr_t RVA_NDEF_SUPPLY_CRISIS_LIM = 0x33e7a40; // int64_t CFixedPoint64 x100,000 (vanilla 10,000)
+
+// v1.1: Smart Airbase Expansion (CAIConstruction::GetBuildingQueuePrio + Air Coverage NDefines::NAI)
+static constexpr uintptr_t RVA_GET_BLDG_QUEUE_PRIO    = 0x1395220;
+static constexpr size_t    OFF_CONSTR_ITEM_INNER      = 0x78;
+static constexpr size_t    OFF_CONSTR_BUILDING_PTR    = 0x1e0;
+static constexpr size_t    OFF_BLDG_IS_AIR_BASE       = 0x363;
+static constexpr uintptr_t RVA_NDEF_WANTED_PLANES_FAC = 0x33e6968; // fp64 (vanilla 50,000 -> 75,000)
+static constexpr uintptr_t RVA_NDEF_AIR_COV_STAY_PUT  = 0x33eb380; // fp64 (vanilla 50,000 -> 75,000)
+static constexpr uintptr_t RVA_NDEF_OUR_COMBATS_AIR   = 0x33e6ca8; // fp64 (vanilla 15,500,000 -> 45,000,000)
+static constexpr uintptr_t RVA_NDEF_FIGHTERS_PER_PLN  = 0x33e7088; // fp64 (vanilla 100,000 -> 200,000)
+static constexpr uintptr_t RVA_NDEF_DEF_SUPPLY_AIR    = 0x33e6488; // fp64 (vanilla 400,000 -> 900,000)
+
+// v1.1: Tactical Prudence & AIFC Spearheads (Sheep AI / Discord AI non-cheating NDefines::NAI)
+static constexpr uintptr_t RVA_NDEF_ATK_MIN_STR_LOW   = 0x33e9720; // fp64 (60,000 -> 75,000)
+static constexpr uintptr_t RVA_NDEF_ATK_MIN_STR_MED   = 0x33e97c0; // fp64 (50,000 -> 65,000)
+static constexpr uintptr_t RVA_NDEF_ATK_MIN_ORG_HIGH  = 0x33e9698; // fp64 (45,000 -> 52,000)
+static constexpr uintptr_t RVA_NDEF_ATK_MIN_STR_HIGH  = 0x33e9858; // fp64 (30,000 -> 50,000)
+static constexpr uintptr_t RVA_NDEF_CANCEL_DISADV_RAT = 0x33ea9b0; // fp64 (150,000 -> 125,000)
+static constexpr uintptr_t RVA_NDEF_CANCEL_MIN_DUR_HR = 0x33eaa7c; // i32  (48 -> 20)
+static constexpr uintptr_t RVA_NDEF_DESP_WEAK_STR_LIM = 0x33ea738; // fp64 (35,000 -> 65,000)
+static constexpr uintptr_t RVA_NDEF_FRONT_EVAL_ACC    = 0x33e9040; // fp64 (100,000 -> 150,000)
+static constexpr uintptr_t RVA_NDEF_FRONT_EVAL_AIR    = 0x33e90f0; // fp64 (100,000 -> 200,000)
+static constexpr uintptr_t RVA_NDEF_FRONT_EVAL_SUPLCK = 0x33e9188; // fp64 (100,000 -> 150,000)
+static constexpr uintptr_t RVA_NDEF_TERRAIN_IMPORT    = 0x33e8c10; // fp64 (1,000,000)
+static constexpr uintptr_t RVA_NDEF_TANKS_MOUNTAINS   = 0x33e8ad8; // fp64 signed (-> -1,500,000)
+static constexpr uintptr_t RVA_NDEF_TANKS_JUNGLE      = 0x33e8b70; // fp64 signed (-> -2,000,000)
+static constexpr uintptr_t RVA_NDEF_ENTRENCH_WEIGHT   = 0x33eadb8; // fp64 (200,000 -> 400,000)
+static constexpr uintptr_t RVA_NDEF_ENCIRCLE_DISC_HRS = 0x33e7fe4; // i32  (72 -> 24)
+static constexpr uintptr_t RVA_NDEF_BULGE_LOW_CUTOFF  = 0x33ebaa8; // fp64 (95,000 -> 120,000)
+static constexpr uintptr_t RVA_NDEF_BULGE_HIGH_CUTOFF = 0x33eba08; // fp64 (150,000 -> 180,000)
+static constexpr uintptr_t RVA_NDEF_CUTOFF_EDGE_PROX  = 0x33ebb60; // i32  (2 -> 1)
+static constexpr uintptr_t RVA_NDEF_MAX_MICRO_ATKS    = 0x33e8e50; // i32  (3 -> 5)
+static constexpr uintptr_t RVA_NDEF_MICRO_INACT_VAL   = 0x33eacb8; // fp64 (25,000 -> 15,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_UPD_DAYS     = 0x33ea2d4; // i32  (5 -> 4)
+static constexpr uintptr_t RVA_NDEF_AIFC_UNIT_RATIO   = 0x33ea718; // fp64 (15,000 -> 22,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_ACTIVATE_ORG = 0x33eaab0; // fp64 (20,000 -> 42,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_NUDGE_DAYS   = 0x33eadf0; // i32  (15 -> 10)
+static constexpr uintptr_t RVA_NDEF_AIFC_HARDNESS     = 0x33eb228; // fp64 (30,000,000 -> 80,000,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_ARMOR        = 0x33eb0b8; // fp64 (3,000,000 -> 8,000,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_SOFT_ATK     = 0x33eaf78; // fp64 (600,000 -> 1,200,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_HARD_ATK     = 0x33eb010; // fp64 (800,000 -> 1,600,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_EXPERIENCE   = 0x33eb688; // fp64 (30,000,000 -> 50,000,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_TGT_SUPPLY   = 0x33eb7d0; // fp64 (2,000,000 -> 3,000,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_TGT_PORT     = 0x33eb878; // fp64 (1,000,000 -> 1,500,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_TGT_PORT_LVL = 0x33eb910; // fp64 (100,000 -> 200,000)
+static constexpr uintptr_t RVA_NDEF_AIFC_COST_MTN     = 0x33ec038; // fp64 (300,000 -> 400,000)
 
 // v1.0: Dormant Peaceful Minor AI Hourly Throttling (CCountryAI vtable & CCountry offsets)
 static constexpr uintptr_t RVA_COUNTRY_AI_VT          = 0x27b8c20;
@@ -263,6 +311,10 @@ static constexpr uint8_t SIG_CW_SETUP_EXEC[15] = {
     0x48, 0x8b, 0xc4, 0x4c, 0x89, 0x40, 0x18, 0x48,
     0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08
 };
+static constexpr uint8_t SIG_GET_BLDG_QUEUE_PRIO[16] = {
+    0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54,
+    0x24, 0x10, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54
+};
 
 // ============================================================================
 // 3. Timing, State & Profiler Tables
@@ -303,6 +355,10 @@ static std::atomic<bool> g_fast_alloc_enabled{false};
 static std::atomic<bool> g_civil_war_fix_enabled{false};
 static std::atomic<bool> g_ai_smart_supply_enabled{false};
 static std::atomic<bool> g_ai_smart_supply_applied{false};
+static std::atomic<bool> g_ai_smart_airbase_enabled{false};
+static std::atomic<bool> g_ai_smart_airbase_defines_applied{false};
+static std::atomic<bool> g_ai_tactical_prudence_enabled{false};
+static std::atomic<bool> g_ai_tactical_prudence_applied{false};
 static std::atomic<bool> g_ai_throttle_minors_enabled{false};
 
 static std::atomic<uint64_t> g_sched_watcher_polls{0};
@@ -317,6 +373,7 @@ static std::atomic<uint64_t> g_slab_alloc_hits{0};
 static std::atomic<uint64_t> g_slab_free_hits{0};
 static std::atomic<uint64_t> g_slab_fallbacks{0};
 static std::atomic<uint64_t> g_cw_rebuilds_coalesced{0};
+static std::atomic<uint64_t> g_airbase_prio_boosts{0};
 static std::atomic<uint64_t> g_minor_ai_skipped{0};
 static std::atomic<uint64_t> g_minor_ai_executed{0};
 
@@ -326,6 +383,7 @@ static std::atomic<uintptr_t> g_orig_pdx_alloc{0};
 static std::atomic<uintptr_t> g_orig_pdx_free{0};
 static std::atomic<uintptr_t> g_orig_cw_setup_exec{0};
 static std::atomic<uintptr_t> g_orig_idler_map_rebuild{0};
+static std::atomic<uintptr_t> g_orig_get_bldg_queue_prio{0};
 static std::atomic<uintptr_t> g_orig_country_ai_pass1{0};
 static std::atomic<uintptr_t> g_orig_country_ai_pass2{0};
 static std::atomic<uint32_t>  g_in_civil_war_depth{0};
@@ -466,12 +524,15 @@ static void reset_stats() {
     g_slab_free_hits.store(0, std::memory_order_relaxed);
     g_slab_fallbacks.store(0, std::memory_order_relaxed);
     g_cw_rebuilds_coalesced.store(0, std::memory_order_relaxed);
+    g_airbase_prio_boosts.store(0, std::memory_order_relaxed);
     g_minor_ai_skipped.store(0, std::memory_order_relaxed);
     g_minor_ai_executed.store(0, std::memory_order_relaxed);
 }
 
 static void emit_report(uint64_t measured_hours);
 static void apply_ai_smart_supply_once();
+static void apply_ai_smart_airbase_once();
+static void apply_ai_tactical_prudence_once();
 
 // ============================================================================
 // 4. Safe Patching & Executable Trampoline Helpers (W^X + FlushInstructionCache)
@@ -575,6 +636,14 @@ extern "C" void hook_update_one_frame(uint8_t* idler, uint8_t allow_sim) {
             if (g_ai_smart_supply_enabled.load(std::memory_order_relaxed) &&
                 !g_ai_smart_supply_applied.load(std::memory_order_relaxed)) {
                 apply_ai_smart_supply_once();
+            }
+            if (g_ai_smart_airbase_enabled.load(std::memory_order_relaxed) &&
+                !g_ai_smart_airbase_defines_applied.load(std::memory_order_relaxed)) {
+                apply_ai_smart_airbase_once();
+            }
+            if (g_ai_tactical_prudence_enabled.load(std::memory_order_relaxed) &&
+                !g_ai_tactical_prudence_applied.load(std::memory_order_relaxed)) {
+                apply_ai_tactical_prudence_once();
             }
         }
     }
@@ -1642,6 +1711,8 @@ static void apply_ai_smart_supply_once() {
     }
     auto* freq_ptr      = reinterpret_cast<int32_t*>(g_exe_base + RVA_NDEF_SUPPLY_FREQ_HRS);
     auto* sat_ptr       = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_SUPPLY_SAT_THR);
+    auto* mot_freq_ptr  = reinterpret_cast<int32_t*>(g_exe_base + RVA_NDEF_SUPPLY_MOT_FREQ);
+    auto* div_mot_ptr   = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_DIV_SUPPLY_MOT);
     auto* prio_hub_ptr  = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_PRIO_SUPPLY_BLDG);
     auto* prio_rail_ptr = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_PRIO_RAILWAY);
     auto* depth_ptr     = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_SUPPLY_MAX_DEPTH);
@@ -1649,6 +1720,8 @@ static void apply_ai_smart_supply_once() {
 
     int32_t old_freq   = *freq_ptr;
     int64_t old_sat    = *sat_ptr;
+    int32_t old_mfreq  = *mot_freq_ptr;
+    int64_t old_dmot   = *div_mot_ptr;
     int64_t old_hub    = *prio_hub_ptr;
     int64_t old_rail   = *prio_rail_ptr;
     int64_t old_depth  = *depth_ptr;
@@ -1657,20 +1730,24 @@ static void apply_ai_smart_supply_once() {
     if (old_freq > 0 && old_sat > 0 && old_hub > 0 && old_rail > 0) {
         if (old_freq > 24)        *freq_ptr      = 24;
         if (old_sat > 65000LL)    *sat_ptr       = 65000LL;
+        if (old_mfreq > 24)       *mot_freq_ptr  = 24;
+        if (old_dmot > 0 && old_dmot < 95000LL) *div_mot_ptr = 95000LL;
         if (old_hub < 450000LL)   *prio_hub_ptr  = 450000LL;
         if (old_rail < 800000LL)  *prio_rail_ptr = 800000LL;
         if (old_depth > 0 && old_depth < 900000LL) *depth_ptr  = 900000LL;
         if (old_crisis > 0 && old_crisis < 25000LL) *crisis_ptr = 25000LL;
 
-        char msg[384];
+        char msg[448];
         std::snprintf(
             msg,
             sizeof(msg),
-            "[hoi4-accel] AI Smart Supply active: freq=%dh->%dh, sat=%.2f->%.2f, hub_prio=%.2f->%.2f, rail_prio=%.2f->%.2f, bfs_depth=%.0f->%.0f\r\n",
+            "[hoi4-accel] AI Smart Supply active: freq=%dh->%dh, sat=%.2f->%.2f, mot_ratio=%.2f->%.2f, hub_prio=%.2f->%.2f, rail_prio=%.2f->%.2f, bfs_depth=%.0f->%.0f\r\n",
             static_cast<int>(old_freq),
             static_cast<int>(*freq_ptr),
             static_cast<double>(old_sat) / 100000.0,
             static_cast<double>(*sat_ptr) / 100000.0,
+            static_cast<double>(old_dmot) / 100000.0,
+            static_cast<double>(*div_mot_ptr) / 100000.0,
             static_cast<double>(old_hub) / 100000.0,
             static_cast<double>(*prio_hub_ptr) / 100000.0,
             static_cast<double>(old_rail) / 100000.0,
@@ -1680,6 +1757,180 @@ static void apply_ai_smart_supply_once() {
         );
         append_log_line(msg);
     }
+}
+
+// --- v1.1 Smart Airbase Expansion (CAIConstruction::GetBuildingQueuePrio + Air Coverage NDefines) ---
+// MSVC x64 ABI: CFixedPoint64 return uses hidden out_ret pointer in %rdx (`this`=%rcx, `out_ret`=%rdx, `item`=%r8)
+using GetBldgQueuePrioFn = int64_t* (*)(uint8_t* self, int64_t* out_ret, const uint8_t* item);
+
+extern "C" int64_t* hook_get_bldg_queue_prio(
+    uint8_t* self,
+    int64_t* out_ret,
+    const uint8_t* item
+) {
+    auto orig = reinterpret_cast<GetBldgQueuePrioFn>(
+        g_orig_get_bldg_queue_prio.load(std::memory_order_relaxed)
+    );
+    int64_t* res = orig(self, out_ret, item);
+    if (res != nullptr && item != nullptr && *res > 0) {
+        const auto* constr = *reinterpret_cast<const uint8_t* const*>(item + OFF_CONSTR_ITEM_INNER);
+        if (constr != nullptr) {
+            const auto* bldg = *reinterpret_cast<const uint8_t* const*>(constr + OFF_CONSTR_BUILDING_PTR);
+            if (bldg != nullptr && bldg[OFF_BLDG_IS_AIR_BASE] != 0) {
+                // Boost queued air_base priority by 3.2x (vanilla UNSPECIFIED 0.50 -> 1.60),
+                // placing needed frontline airbases cleanly above factories (0.70/0.80)
+                // while keeping critical supply hubs (4.50) and railways (8.00) strictly first.
+                int64_t cur = *res;
+                static constexpr int64_t kMaxSafePrio = 2000000000000000LL;
+                int64_t boosted = (cur < (kMaxSafePrio / 16)) ? ((cur * 16) / 5) : kMaxSafePrio;
+                *res = boosted;
+                g_airbase_prio_boosts.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    return res;
+}
+
+static void apply_ai_smart_airbase_once() {
+    bool expected = false;
+    if (!g_ai_smart_airbase_defines_applied.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        return;
+    }
+    if (g_exe_base == 0) {
+        return;
+    }
+    auto raise_fp64 = [&](uintptr_t rva, int64_t target) -> int {
+        auto* p = reinterpret_cast<int64_t*>(g_exe_base + rva);
+        int64_t cur = *p;
+        if (cur > 0 && cur < target) {
+            *p = target;
+            return 1;
+        }
+        return 0;
+    };
+
+    int updated = 0;
+    updated += raise_fp64(RVA_NDEF_WANTED_PLANES_FAC, 75000LL);    // 0.50 -> 0.75
+    updated += raise_fp64(RVA_NDEF_AIR_COV_STAY_PUT,  75000LL);    // 0.50 -> 0.75 (Sheep AI: rebase closer when coverage < 75%)
+    updated += raise_fp64(RVA_NDEF_OUR_COMBATS_AIR,   45000000LL); // 155 -> 450 (focus air & base capacity on active ground combats)
+    updated += raise_fp64(RVA_NDEF_FIGHTERS_PER_PLN,  200000LL);   // 1.0 -> 2.0
+    updated += raise_fp64(RVA_NDEF_DEF_SUPPLY_AIR,    900000LL);   // 4.0 -> 9.0 (Sheep AI: protect supply hubs from logistics strikes)
+
+    char msg[256];
+    std::snprintf(
+        msg,
+        sizeof(msg),
+        "[hoi4-accel] AI Smart Airbase active: air_base queue prio 3.2x (0.50->1.60) + %d/5 air-coverage defines tuned\r\n",
+        updated
+    );
+    append_log_line(msg);
+}
+
+// --- v1.1 Tactical Prudence & Force Concentration (Sheep AI / Discord AI Non-Cheating Core) ---
+// Strictly adjusts NDefines::NAI decision weights (zero player/combat-rule changes, zero cheats).
+static void apply_ai_tactical_prudence_once() {
+    bool expected = false;
+    if (!g_ai_tactical_prudence_applied.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        return;
+    }
+    if (g_exe_base == 0) {
+        return;
+    }
+    // Sanity check that NDefines::NAI globals are loaded
+    int64_t sanity_str = *reinterpret_cast<const int64_t*>(g_exe_base + RVA_NDEF_ATK_MIN_STR_LOW);
+    int32_t sanity_enc = *reinterpret_cast<const int32_t*>(g_exe_base + RVA_NDEF_ENCIRCLE_DISC_HRS);
+    if (sanity_str <= 0 || sanity_enc <= 0) {
+        return;
+    }
+
+    int changed = 0;
+    auto raise_fp64 = [&](uintptr_t rva, int64_t min_target) {
+        auto* p = reinterpret_cast<int64_t*>(g_exe_base + rva);
+        if (*p < min_target) {
+            *p = min_target;
+            ++changed;
+        }
+    };
+    auto lower_fp64_pos = [&](uintptr_t rva, int64_t max_target) {
+        auto* p = reinterpret_cast<int64_t*>(g_exe_base + rva);
+        if (*p > max_target) {
+            *p = max_target;
+            ++changed;
+        }
+    };
+    auto lower_fp64_signed = [&](uintptr_t rva, int64_t max_signed_target) {
+        auto* p = reinterpret_cast<int64_t*>(g_exe_base + rva);
+        if (*p > max_signed_target) {
+            *p = max_signed_target;
+            ++changed;
+        }
+    };
+    auto raise_i32 = [&](uintptr_t rva, int32_t min_target) {
+        auto* p = reinterpret_cast<int32_t*>(g_exe_base + rva);
+        if (*p < min_target) {
+            *p = min_target;
+            ++changed;
+        }
+    };
+    auto lower_i32 = [&](uintptr_t rva, int32_t max_target) {
+        auto* p = reinterpret_cast<int32_t*>(g_exe_base + rva);
+        if (*p > max_target) {
+            *p = max_target;
+            ++changed;
+        }
+    };
+
+    // 1. Stop suicidal low-strength grinding & abort losing attacks in 20h instead of 48h
+    raise_fp64(RVA_NDEF_ATK_MIN_STR_LOW,       75000LL);    // 0.60 -> 0.75 (Sheep AI)
+    raise_fp64(RVA_NDEF_ATK_MIN_STR_MED,       65000LL);    // 0.50 -> 0.65 (Sheep AI)
+    raise_fp64(RVA_NDEF_ATK_MIN_ORG_HIGH,      52000LL);    // 0.45 -> 0.52
+    raise_fp64(RVA_NDEF_ATK_MIN_STR_HIGH,      50000LL);    // 0.30 -> 0.50 (Sheep AI: stop 30% strength divisions melting)
+    lower_fp64_pos(RVA_NDEF_CANCEL_DISADV_RAT, 125000LL);   // 1.50 -> 1.25 (abort earlier when outmatched)
+    lower_i32(RVA_NDEF_CANCEL_MIN_DUR_HR,      20);         // 48h  -> 20h
+    raise_fp64(RVA_NDEF_DESP_WEAK_STR_LIM,     65000LL);    // 0.35 -> 0.65
+
+    // 2. Smarter front assessment, terrain discipline & entrenchment preservation
+    raise_fp64(RVA_NDEF_FRONT_EVAL_ACC,        150000LL);   // 1.00 -> 1.50 (Sheep AI)
+    raise_fp64(RVA_NDEF_FRONT_EVAL_AIR,        200000LL);   // 1.00 -> 2.00 (Sheep AI: respect air superiority)
+    raise_fp64(RVA_NDEF_FRONT_EVAL_SUPLCK,     150000LL);   // 1.00 -> 1.50 (Sheep AI: avoid overstacking low-supply pockets)
+    raise_fp64(RVA_NDEF_TERRAIN_IMPORT,        1000000LL);  // >= 10.0
+    lower_fp64_signed(RVA_NDEF_TANKS_MOUNTAINS,-1500000LL); // <= -15.0 (Sheep AI: keep tanks out of mountains)
+    lower_fp64_signed(RVA_NDEF_TANKS_JUNGLE,   -2000000LL); // <= -20.0 (Sheep AI: keep tanks out of jungles)
+    raise_fp64(RVA_NDEF_ENTRENCH_WEIGHT,       400000LL);   // 2.0  -> 4.0  (Sheep AI: stop shuffling dug-in line infantry)
+
+    // 3. Daily pocket/bulge detection & weak-point micro-attacks (prevents passive stalemates & encirclements)
+    lower_i32(RVA_NDEF_ENCIRCLE_DISC_HRS,      24);         // 72h  -> 24h (daily encirclement discovery)
+    raise_fp64(RVA_NDEF_BULGE_LOW_CUTOFF,      120000LL);   // 0.95 -> 1.20 (Sheep AI)
+    raise_fp64(RVA_NDEF_BULGE_HIGH_CUTOFF,     180000LL);   // 1.50 -> 1.80 (Sheep AI)
+    lower_i32(RVA_NDEF_CUTOFF_EDGE_PROX,       1);          // 2    -> 1    (Sheep AI)
+    raise_i32(RVA_NDEF_MAX_MICRO_ATKS,         5);          // 3    -> 5    (Sheep AI: opportunistic weak-point probes)
+    lower_fp64_pos(RVA_NDEF_MICRO_INACT_VAL,   15000LL);    // 0.25 -> 0.15 (Sheep AI: probe weak spots even when main plan pauses)
+
+    // 4. Armored/Shock Force Concentration (AIFC — Sheep AI / Discord AI spearheads)
+    lower_i32(RVA_NDEF_AIFC_UPD_DAYS,          4);          // 5d   -> 4d
+    raise_fp64(RVA_NDEF_AIFC_UNIT_RATIO,       22000LL);    // 0.15 -> 0.22 (22% shock spearhead allocation)
+    raise_fp64(RVA_NDEF_AIFC_ACTIVATE_ORG,     42000LL);    // 0.20 -> 0.42 (wait for 42% org before launching spearhead!)
+    lower_i32(RVA_NDEF_AIFC_NUDGE_DAYS,        10);         // 15d  -> 10d
+    raise_fp64(RVA_NDEF_AIFC_HARDNESS,         80000000LL); // 300  -> 800  (Sheep AI: pack armor/mech into spearheads)
+    raise_fp64(RVA_NDEF_AIFC_ARMOR,            8000000LL);  // 30   -> 80   (Sheep AI)
+    raise_fp64(RVA_NDEF_AIFC_SOFT_ATK,         1200000LL);  // 6    -> 12   (Sheep AI)
+    raise_fp64(RVA_NDEF_AIFC_HARD_ATK,         1600000LL);  // 8    -> 16   (Sheep AI)
+    raise_fp64(RVA_NDEF_AIFC_EXPERIENCE,       50000000LL); // 300  -> 500  (Sheep AI)
+    raise_fp64(RVA_NDEF_AIFC_TGT_SUPPLY,       3000000LL);  // 20   -> 30   (Sheep AI: aim spearheads at enemy supply hubs)
+    raise_fp64(RVA_NDEF_AIFC_TGT_PORT,         1500000LL);  // 10   -> 15   (Sheep AI)
+    raise_fp64(RVA_NDEF_AIFC_TGT_PORT_LVL,     200000LL);   // 1    -> 2    (Sheep AI)
+    raise_fp64(RVA_NDEF_AIFC_COST_MTN,         400000LL);   // 3.0  -> 4.0  (Sheep AI: route spearheads around mountains)
+
+    char msg[256];
+    std::snprintf(
+        msg,
+        sizeof(msg),
+        "[hoi4-accel] AI Tactical Prudence & AIFC Spearheads active (%d/33 Sheep-AI-based non-cheating NAI defines tuned)\r\n",
+        changed
+    );
+    append_log_line(msg);
 }
 
 // --- Dormant Peaceful Minor AI Hourly Throttling ---
@@ -1957,7 +2208,7 @@ static void emit_report(uint64_t measured_hours) {
     uint64_t tf_fps = (tf_ns > 0) ? (1000000000ULL / tf_ns) : 0;
     uint64_t sf_fps = g_smooth_fps.load(std::memory_order_relaxed);
 
-    put("\r\n================ HOI4 ACCEL v1.0-win64 REPORT ================\r\n");
+    put("\r\n================ HOI4 ACCEL v1.1-win64 REPORT ================\r\n");
     put("Measured Hours : %llu (%.2f game days)\r\n",
         static_cast<unsigned long long>(measured_hours), days);
     put("Wall Time      : %.3f s\r\n", wall_s);
@@ -1965,7 +2216,7 @@ static void emit_report(uint64_t measured_hours) {
         hours_per_sec, days_per_sec, ms_per_day);
     put("CPU Utilization: %.2fs CPU in %.2fs wall  =>  %.2f active cores (of %lu logical)\r\n",
         cpu_s, wall_s, active_cores, static_cast<unsigned long>(si.dwNumberOfProcessors));
-    put("Config         : target_fps=%llu smooth_fps=%llu fast_alloc=%d fast_mod=%d country_grain=%d civil_war_fix=%d ai_smart_supply=%d ai_throttle_minors=%d fast_sched=%d fast_wait=%d fast_yield=%d no_job_clock=%d affinity=%d quiet_log=%d fast_save=%d no_telemetry=%d\r\n",
+    put("Config         : target_fps=%llu smooth_fps=%llu fast_alloc=%d fast_mod=%d country_grain=%d civil_war_fix=%d ai_smart_supply=%d ai_smart_airbase=%d ai_tactical_prudence=%d ai_throttle_minors=%d fast_sched=%d fast_wait=%d fast_yield=%d no_job_clock=%d affinity=%d quiet_log=%d fast_save=%d no_telemetry=%d\r\n",
         static_cast<unsigned long long>(tf_fps),
         static_cast<unsigned long long>(sf_fps),
         g_fast_alloc_enabled.load() ? 1 : 0,
@@ -1973,6 +2224,8 @@ static void emit_report(uint64_t measured_hours) {
         g_country_grain_enabled.load() ? 1 : 0,
         g_civil_war_fix_enabled.load() ? 1 : 0,
         g_ai_smart_supply_enabled.load() ? 1 : 0,
+        g_ai_smart_airbase_enabled.load() ? 1 : 0,
+        g_ai_tactical_prudence_enabled.load() ? 1 : 0,
         g_ai_throttle_minors_enabled.load() ? 1 : 0,
         g_fast_sched_enabled.load() ? 1 : 0,
         g_fast_wait_enabled.load() ? 1 : 0,
@@ -2050,6 +2303,14 @@ static void emit_report(uint64_t measured_hours) {
     if (g_civil_war_fix_enabled.load()) {
         put("CivilWarFix    : %llu redundant mid-split map/supply rebuilds coalesced\r\n",
             static_cast<unsigned long long>(g_cw_rebuilds_coalesced.load()));
+    }
+    if (g_ai_smart_airbase_enabled.load()) {
+        put("SmartAirbase   : %llu queued air_base priority evaluations boosted (3.2x)\r\n",
+            static_cast<unsigned long long>(g_airbase_prio_boosts.load()));
+    }
+    if (g_ai_tactical_prudence_enabled.load()) {
+        put("TacticalAI     : Sheep-AI-based prudence & AIFC spearheads active (applied=%d)\r\n",
+            g_ai_tactical_prudence_applied.load() ? 1 : 0);
     }
     if (g_ai_throttle_minors_enabled.load()) {
         put("MinorAIThrot   : %llu peaceful minor sub-passes skipped | %llu active AI passes executed\r\n",
@@ -2239,7 +2500,7 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
     std::snprintf(
         hdr,
         sizeof(hdr),
-        "[hoi4-accel v1.0-win64] Attached to hoi4.exe (pid=%lu, base=0x%llx, preset=%s)\r\n",
+        "[hoi4-accel v1.1-win64] Attached to hoi4.exe (pid=%lu, base=0x%llx, preset=%s)\r\n",
         static_cast<unsigned long>(GetCurrentProcessId()),
         static_cast<unsigned long long>(g_exe_base),
         preset
@@ -2250,6 +2511,29 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
                                 get_cfg_bool("HOI4_ACCEL_AI_SMART_SUPPLY", L"ai_smart_supply", def_core);
     if (want_ai_smart_supply) {
         g_ai_smart_supply_enabled.store(true, std::memory_order_release);
+    }
+    bool want_ai_smart_airbase = !noop_mode &&
+                                 get_cfg_bool("HOI4_ACCEL_AI_SMART_AIRBASE", L"ai_smart_airbase", def_core);
+    if (want_ai_smart_airbase) {
+        uintptr_t tramp_ab = install_trampoline_hook(
+            g_exe_base + RVA_GET_BLDG_QUEUE_PRIO,
+            SIG_GET_BLDG_QUEUE_PRIO,
+            sizeof(SIG_GET_BLDG_QUEUE_PRIO),
+            reinterpret_cast<uintptr_t>(&hook_get_bldg_queue_prio)
+        );
+        if (tramp_ab != 0) {
+            g_orig_get_bldg_queue_prio.store(tramp_ab, std::memory_order_release);
+            g_ai_smart_airbase_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled AiSmartAirbase (CAIConstruction::GetBuildingQueuePrio @ 0x1395220)\r\n");
+        } else {
+            want_ai_smart_airbase = false;
+            append_log_line("[hoi4-accel] SKIPPED AiSmartAirbase (signature mismatch)\r\n");
+        }
+    }
+    bool want_ai_tactical_prudence = !noop_mode &&
+                                     get_cfg_bool("HOI4_ACCEL_AI_TACTICAL_PRUDENCE", L"ai_tactical_prudence", def_core);
+    if (want_ai_tactical_prudence) {
+        g_ai_tactical_prudence_enabled.store(true, std::memory_order_release);
     }
 
     bool need_scoped_timer = false;
@@ -2271,12 +2555,14 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
         need_scoped_timer = true;
     }
 
-    // 1. Frame tracker + Render-Aware Multi-Tick Speed-5 Bursting (also drives lazy AI Smart Supply init)
+    // 1. Frame tracker + Render-Aware Multi-Tick Speed-5 Bursting (also drives lazy AI NDefines init)
     uint64_t target_fps = noop_mode ? 0 : get_cfg_u64("HOI4_ACCEL_TARGET_FPS", L"target_fps", def_fps);
     bool need_frame_hooks = (target_fps >= 1 && target_fps <= 240) ||
                             bench_hours > 0 ||
                             g_collect_zones.load(std::memory_order_relaxed) ||
-                            want_ai_smart_supply;
+                            want_ai_smart_supply ||
+                            want_ai_smart_airbase ||
+                            want_ai_tactical_prudence;
     if (need_frame_hooks) {
         uint64_t max_burst = get_cfg_u64("HOI4_ACCEL_MAX_BURST", L"max_burst", 16);
         if (max_burst < 1) max_burst = 1;

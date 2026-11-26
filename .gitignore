@@ -1,4 +1,6 @@
 /target/
+/bench_results/
+/resolve_hotspots.py
 *.o
 *.tmp
 hoi4_accel.log

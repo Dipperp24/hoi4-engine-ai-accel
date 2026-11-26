@@ -1,4 +1,4 @@
-//! hoi4-rust-accel v1.0: Native Rust Engine & AI Accelerator for Hearts of Iron IV (Linux x86_64 v1.20.0.0)
+//! hoi4-rust-accel v1.1: Native Rust Engine & AI Accelerator for Hearts of Iron IV (Linux x86_64 v1.20.0.0)
 //!
 //! Features (non-destructive LD_PRELOAD, configurable via `hoi4_accel.ini` or `HOI4_ACCEL_*` env vars):
 //!   1. fast_sched / HOI4_ACCEL_FAST_SCHED=1       : Lock-free zero-bounce Rust worker scheduler (PopTaskOrWait @ 0x3666d70).
@@ -13,11 +13,13 @@
 //!  10. fast_mod / HOI4_ACCEL_FAST_MOD=1           : Branchless CMOV binary search CModifier::GetValue (0x2241b00).
 //!  11. fast_alloc / HOI4_ACCEL_FAST_ALLOC=1       : 128 MB lock-free ABA-safe slab + TLS magazine on CPdxNewDeleteAllocator (0x4349510).
 //!  12. civil_war_fix / HOI4_ACCEL_CIVIL_WAR_FIX=1 : Coalesces 100+ per-state map/supply overlay rebuilds in CCivilWarSetup::Execute (0x1bdfa80).
-//!  13. ai_smart_supply / HOI4_ACCEL_AI_SMART_SUPPLY=1 : Proactive AI railway & supply-hub bottleneck detection + top construction priority.
-//!  14. ai_throttle_minors / HOI4_ACCEL_AI_THROTTLE_MINORS=1 : Staggered hourly AI fast-skip strictly for peaceful non-major AI minors.
-//!  15. quiet_log / HOI4_ACCEL_QUIET_LOG=1         : Lock-free error.log spam deduplicator (SetLogger @ 0x361bec0).
-//!  16. fast_save / HOI4_ACCEL_FAST_SAVE=1         : Removes blocking synchronous fsync() stalls during saves (0x3672b60).
-//!  17. no_telemetry / HOI4_ACCEL_NO_TELEMETRY=1   : Disables Paradox SDK QueueAndSendTelemetry (0x315d2af) cleanly.
+//!  13. ai_smart_supply / HOI4_ACCEL_AI_SMART_SUPPLY=1 : Proactive AI railway, supply-hub & truck motorization logistics.
+//!  14. ai_smart_airbase / HOI4_ACCEL_AI_SMART_AIRBASE=1 : Boosts needed frontline air_base queue prio (0x74f4d0) + coverage rebasing.
+//!  15. ai_tactical_prudence / HOI4_ACCEL_AI_TACTICAL_PRUDENCE=1 : Non-cheating Sheep-AI-based combat prudence, bulge detection & AIFC spearheads.
+//!  16. ai_throttle_minors / HOI4_ACCEL_AI_THROTTLE_MINORS=1 : Staggered hourly AI fast-skip strictly for peaceful non-major AI minors.
+//!  17. quiet_log / HOI4_ACCEL_QUIET_LOG=1         : Lock-free error.log spam deduplicator (SetLogger @ 0x361bec0).
+//!  18. fast_save / HOI4_ACCEL_FAST_SAVE=1         : Removes blocking synchronous fsync() stalls during saves (0x3672b60).
+//!  19. no_telemetry / HOI4_ACCEL_NO_TELEMETRY=1   : Disables Paradox SDK QueueAndSendTelemetry (0x315d2af) cleanly.
 
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
@@ -88,13 +90,61 @@ const OFF_INGAME_IDLER_VT: usize = 0x4467770;
 const OFF_IDLER_MAP_REBUILD_SLOT: usize = 0x240;
 const OFF_IDLER_MAP_REBUILD_FN: usize = 0x21aa250;
 
-// v1.0: NDefines::NAI & NDefines::NAITheatre supply/railway construction globals (.bss)
+// v1.0 -> v1.1: NDefines::NAI & NDefines::NAITheatre supply/railway/motorization globals (.bss)
 const OFF_NDEF_PRIO_SUPPLY_BLDG: usize = 0x4594d68; // i64 CFixedPoint64 (x100,000), vanilla 1.10 = 110_000
 const OFF_NDEF_PRIO_RAILWAY: usize = 0x4594d78;     // i64 CFixedPoint64 (x100,000), vanilla 4.00 = 400_000
 const OFF_NDEF_SUPPLY_FREQ_HRS: usize = 0x4595788;  // i32 hours, vanilla 168 (1 week)
 const OFF_NDEF_SUPPLY_SAT_THR: usize = 0x4595798;   // i64 CFixedPoint64 (x100,000), vanilla 0.85 = 85_000
+const OFF_NDEF_SUPPLY_MOT_FREQ: usize = 0x45957a8;  // i32 hours, vanilla 52
+const OFF_NDEF_DIV_SUPPLY_MOT: usize = 0x4595e48;   // i64 CFixedPoint64 (x100,000), vanilla 0.80 = 80_000
 const OFF_NDEF_SUPPLY_MAX_DEPTH: usize = 0x4596458; // i64 CFixedPoint64 (x100,000), vanilla 5.00 = 500_000
-const OFF_NDEF_SUPPLY_CRISIS_LIM: usize = 0x4596478;// i64 CFixedPoint64 (x100,000), vanilla 0.10 = 10_000
+const OFF_NDEF_SUPPLY_CRISIS_LIM: usize = 0x4596468;// i64 CFixedPoint64 (x100,000), vanilla 0.10 = 10_000
+
+// v1.1: Smart Airbase Expansion (CAIConstruction::GetBuildingQueuePrio + Air Coverage NDefines::NAI)
+const OFF_GET_BLDG_QUEUE_PRIO: usize = 0x74f4d0;
+const OFF_CONSTR_ITEM_INNER: usize = 0x78;
+const OFF_CONSTR_BUILDING_PTR: usize = 0x1c0;
+const OFF_BLDG_IS_AIR_BASE: usize = 0x33b;
+const OFF_NDEF_WANTED_PLANES_FAC: usize = 0x45938c8; // fp64 (50_000 -> 75_000)
+const OFF_NDEF_AIR_COV_STAY_PUT: usize = 0x45954f8;  // fp64 (50_000 -> 75_000)
+const OFF_NDEF_OUR_COMBATS_AIR: usize = 0x4594408;   // fp64 (15_500_000 -> 45_000_000)
+const OFF_NDEF_FIGHTERS_PER_PLN: usize = 0x4594478;  // fp64 (100_000 -> 200_000)
+const OFF_NDEF_DEF_SUPPLY_AIR: usize = 0x4594318;    // fp64 (400_000 -> 900_000)
+
+// v1.1: Tactical Prudence & AIFC Spearheads (Sheep AI / Discord AI non-cheating NDefines::NAI)
+const OFF_NDEF_ATK_MIN_STR_LOW: usize = 0x4593298;   // fp64 (60_000 -> 75_000)
+const OFF_NDEF_ATK_MIN_STR_MED: usize = 0x45932a8;   // fp64 (50_000 -> 65_000)
+const OFF_NDEF_ATK_MIN_ORG_HIGH: usize = 0x4593288;  // fp64 (45_000 -> 52_000)
+const OFF_NDEF_ATK_MIN_STR_HIGH: usize = 0x45932b8;  // fp64 (30_000 -> 50_000)
+const OFF_NDEF_CANCEL_DISADV_RAT: usize = 0x4593f48; // fp64 (150_000 -> 125_000)
+const OFF_NDEF_CANCEL_MIN_DUR_HR: usize = 0x4593f58; // i32  (48 -> 20)
+const OFF_NDEF_DESP_WEAK_STR_LIM: usize = 0x4594a18; // fp64 (35_000 -> 65_000)
+const OFF_NDEF_FRONT_EVAL_ACC: usize = 0x45951c8;    // fp64 (100_000 -> 150_000)
+const OFF_NDEF_FRONT_EVAL_AIR: usize = 0x45951d8;    // fp64 (100_000 -> 200_000)
+const OFF_NDEF_FRONT_EVAL_SUPLCK: usize = 0x45951e8; // fp64 (100_000 -> 150_000)
+const OFF_NDEF_TERRAIN_IMPORT: usize = 0x4594778;    // fp64 (1_000_000)
+const OFF_NDEF_TANKS_MOUNTAINS: usize = 0x4594758;   // fp64 signed (-> -1_500_000)
+const OFF_NDEF_TANKS_JUNGLE: usize = 0x4594768;      // fp64 signed (-> -2_000_000)
+const OFF_NDEF_ENTRENCH_WEIGHT: usize = 0x45934d8;   // fp64 (200_000 -> 400_000)
+const OFF_NDEF_ENCIRCLE_DISC_HRS: usize = 0x4593af8; // i32  (72 -> 24)
+const OFF_NDEF_BULGE_LOW_CUTOFF: usize = 0x45940e8;  // fp64 (95_000 -> 120_000)
+const OFF_NDEF_BULGE_HIGH_CUTOFF: usize = 0x45940d8; // fp64 (150_000 -> 180_000)
+const OFF_NDEF_CUTOFF_EDGE_PROX: usize = 0x45940f8;  // i32  (2 -> 1)
+const OFF_NDEF_MAX_MICRO_ATKS: usize = 0x4593c78;    // i32  (3 -> 5)
+const OFF_NDEF_MICRO_INACT_VAL: usize = 0x4593f88;   // fp64 (25_000 -> 15_000)
+const OFF_NDEF_AIFC_UPD_DAYS: usize = 0x4595ec8;     // i32  (5 -> 4)
+const OFF_NDEF_AIFC_UNIT_RATIO: usize = 0x4595f18;   // fp64 (15_000 -> 22_000)
+const OFF_NDEF_AIFC_ACTIVATE_ORG: usize = 0x4595f48; // fp64 (20_000 -> 42_000)
+const OFF_NDEF_AIFC_NUDGE_DAYS: usize = 0x4595f78;   // i32  (15 -> 10)
+const OFF_NDEF_AIFC_HARDNESS: usize = 0x4595fd8;     // fp64 (30_000_000 -> 80_000_000)
+const OFF_NDEF_AIFC_ARMOR: usize = 0x4595fb8;        // fp64 (3_000_000 -> 8_000_000)
+const OFF_NDEF_AIFC_SOFT_ATK: usize = 0x4595f98;     // fp64 (600_000 -> 1_200_000)
+const OFF_NDEF_AIFC_HARD_ATK: usize = 0x4595fa8;     // fp64 (800_000 -> 1_600_000)
+const OFF_NDEF_AIFC_EXPERIENCE: usize = 0x4596048;   // fp64 (30_000_000 -> 50_000_000)
+const OFF_NDEF_AIFC_TGT_SUPPLY: usize = 0x4596068;   // fp64 (2_000_000 -> 3_000_000)
+const OFF_NDEF_AIFC_TGT_PORT: usize = 0x4596078;     // fp64 (1_000_000 -> 1_500_000)
+const OFF_NDEF_AIFC_TGT_PORT_LVL: usize = 0x4596088; // fp64 (100_000 -> 200_000)
+const OFF_NDEF_AIFC_COST_MTN: usize = 0x4596128;     // fp64 (300_000 -> 400_000)
 
 // v1.0: Peaceful minor AI hourly throttling (CCountryAI vtable & CCountry field offsets)
 const OFF_COUNTRY_AI_VT: usize = 0x434b3b8;
@@ -157,6 +207,10 @@ const SIG_SCHED_YIELD_PLT: [u8; 16] = [
 const SIG_CW_SETUP_EXEC: [u8; 20] = [
     0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x81,
     0xec, 0x78, 0x03, 0x00, 0x00,
+];
+const SIG_GET_BLDG_QUEUE_PRIO: [u8; 20] = [
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x81,
+    0xec, 0xd8, 0x00, 0x00, 0x00,
 ];
 
 // ============================================================================
@@ -250,6 +304,7 @@ type PdxAllocFn = unsafe extern "C" fn(*mut u8, usize, usize) -> *mut u8;
 type PdxFreeFn = unsafe extern "C" fn(*mut u8, *mut u8);
 type CwSetupExecFn = unsafe extern "C" fn(*mut u8, *mut u8, u8);
 type IdlerMapRebuildFn = unsafe extern "C" fn(*mut u8) -> u8;
+type GetBldgQueuePrioFn = unsafe extern "C" fn(*mut u8, *const u8) -> i64;
 type CountryAiPassFn = unsafe extern "C" fn(*mut u8, usize, usize);
 type OwnerAccessCountryFn = unsafe extern "C" fn(*mut u8) -> *mut u8;
 type CountryHasHumanFn = unsafe extern "C" fn(*mut u8) -> u8;
@@ -534,6 +589,16 @@ static CW_REBUILDS_COALESCED: AtomicU64 = AtomicU64::new(0);
 static AI_SMART_SUPPLY_ENABLED: AtomicBool = AtomicBool::new(false);
 static AI_SMART_SUPPLY_APPLIED: AtomicBool = AtomicBool::new(false);
 
+// v1.1 Module 14: Smart Airbase Expansion (CAIConstruction::GetBuildingQueuePrio + Air Coverage NDefines)
+static AI_SMART_AIRBASE_ENABLED: AtomicBool = AtomicBool::new(false);
+static AI_SMART_AIRBASE_DEFINES_APPLIED: AtomicBool = AtomicBool::new(false);
+static ORIG_GET_BLDG_QUEUE_PRIO: AtomicUsize = AtomicUsize::new(0);
+static AIRBASE_PRIO_BOOSTS: AtomicU64 = AtomicU64::new(0);
+
+// v1.1 Module 15: Tactical Prudence & AIFC Spearheads (Sheep AI / Discord AI Non-Cheating Core)
+static AI_TACTICAL_PRUDENCE_ENABLED: AtomicBool = AtomicBool::new(false);
+static AI_TACTICAL_PRUDENCE_APPLIED: AtomicBool = AtomicBool::new(false);
+
 // v1.0 Module 14: Dormant Peaceful Minor AI Hourly Throttling
 static AI_THROTTLE_MINORS_ENABLED: AtomicBool = AtomicBool::new(false);
 static ORIG_COUNTRY_AI_PASS1: AtomicUsize = AtomicUsize::new(0);
@@ -572,6 +637,16 @@ unsafe extern "C" fn hook_session_update(app: *mut u8) {
                 && !AI_SMART_SUPPLY_APPLIED.load(Ordering::Relaxed)
             {
                 unsafe { apply_ai_smart_supply_once(pie_for_state) };
+            }
+            if AI_SMART_AIRBASE_ENABLED.load(Ordering::Relaxed)
+                && !AI_SMART_AIRBASE_DEFINES_APPLIED.load(Ordering::Relaxed)
+            {
+                unsafe { apply_ai_smart_airbase_once(pie_for_state) };
+            }
+            if AI_TACTICAL_PRUDENCE_ENABLED.load(Ordering::Relaxed)
+                && !AI_TACTICAL_PRUDENCE_APPLIED.load(Ordering::Relaxed)
+            {
+                unsafe { apply_ai_tactical_prudence_once(pie_for_state) };
             }
         }
     }
@@ -1373,6 +1448,8 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
     unsafe {
         let freq_ptr = (pie + OFF_NDEF_SUPPLY_FREQ_HRS) as *mut i32;
         let sat_ptr = (pie + OFF_NDEF_SUPPLY_SAT_THR) as *mut i64;
+        let mot_freq_ptr = (pie + OFF_NDEF_SUPPLY_MOT_FREQ) as *mut i32;
+        let div_mot_ptr = (pie + OFF_NDEF_DIV_SUPPLY_MOT) as *mut i64;
         let prio_hub_ptr = (pie + OFF_NDEF_PRIO_SUPPLY_BLDG) as *mut i64;
         let prio_rail_ptr = (pie + OFF_NDEF_PRIO_RAILWAY) as *mut i64;
         let depth_ptr = (pie + OFF_NDEF_SUPPLY_MAX_DEPTH) as *mut i64;
@@ -1380,6 +1457,8 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
 
         let old_freq = *freq_ptr;
         let old_sat = *sat_ptr;
+        let old_mfreq = *mot_freq_ptr;
+        let old_dmot = *div_mot_ptr;
         let old_hub = *prio_hub_ptr;
         let old_rail = *prio_rail_ptr;
         let old_depth = *depth_ptr;
@@ -1392,6 +1471,12 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
             }
             if old_sat > 65_000 {
                 *sat_ptr = 65_000; // Proactively upgrade strained railways at 65% node saturation (vanilla 85%)
+            }
+            if old_mfreq > 24 {
+                *mot_freq_ptr = 24; // Evaluate supply motorization daily (24h) instead of 52h
+            }
+            if old_dmot > 0 && old_dmot < 95_000 {
+                *div_mot_ptr = 95_000; // Proactively motorize hubs with trucks at 95% supply (vanilla 80%)
             }
             if old_hub < 450_000 {
                 *prio_hub_ptr = 450_000; // Boost Supply Hub / Port construction prio 1.10 -> 4.50
@@ -1406,11 +1491,13 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
                 *crisis_ptr = 25_000; // React to low-supply fronts at 25% supply instead of 10%
             }
             eprintln!(
-                "[hoi4-rust-accel] AI Smart Supply active: freq={}h->{}h, sat={:.2}->{:.2}, hub_prio={:.2}->{:.2}, rail_prio={:.2}->{:.2}, bfs_depth={:.0}->{:.0}",
+                "[hoi4-rust-accel] AI Smart Supply active: freq={}h->{}h, sat={:.2}->{:.2}, mot_ratio={:.2}->{:.2}, hub_prio={:.2}->{:.2}, rail_prio={:.2}->{:.2}, bfs_depth={:.0}->{:.0}",
                 old_freq,
                 *freq_ptr,
                 old_sat as f64 / 100_000.0,
                 *sat_ptr as f64 / 100_000.0,
+                old_dmot as f64 / 100_000.0,
+                *div_mot_ptr as f64 / 100_000.0,
                 old_hub as f64 / 100_000.0,
                 *prio_hub_ptr as f64 / 100_000.0,
                 old_rail as f64 / 100_000.0,
@@ -1420,6 +1507,165 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
             );
         }
     }
+}
+
+// ============================================================================
+// v1.1 Module 14: Smart Airbase Expansion
+// Boosts queued `air_base` priority in CAIConstruction::GetBuildingQueuePrio (0x74f4d0)
+// from UNSPECIFIED (0.50) by 3.2x (-> 1.60) so needed frontline airbases actually
+// receive civilian factories ahead of mil/civ factories (0.70/0.80), without disturbing
+// bunkers/silos/AA (0.50) or emergency supply hubs/railways (4.50/8.00).
+// ============================================================================
+unsafe extern "C" fn hook_get_bldg_queue_prio(self_ptr: *mut u8, item: *const u8) -> i64 {
+    let orig: GetBldgQueuePrioFn =
+        unsafe { std::mem::transmute(ORIG_GET_BLDG_QUEUE_PRIO.load(Ordering::Relaxed)) };
+    let prio = unsafe { orig(self_ptr, item) };
+    if prio > 0 && !item.is_null() {
+        let constr = unsafe { *(item.add(OFF_CONSTR_ITEM_INNER) as *const *const u8) };
+        if !constr.is_null() {
+            let bldg = unsafe { *(constr.add(OFF_CONSTR_BUILDING_PTR) as *const *const u8) };
+            if !bldg.is_null() && unsafe { *bldg.add(OFF_BLDG_IS_AIR_BASE) } != 0 {
+                const MAX_SAFE_PRIO: i64 = 2_000_000_000_000_000;
+                let boosted = if prio < (MAX_SAFE_PRIO / 16) {
+                    (prio * 16) / 5
+                } else {
+                    MAX_SAFE_PRIO
+                };
+                AIRBASE_PRIO_BOOSTS.fetch_add(1, Ordering::Relaxed);
+                return boosted;
+            }
+        }
+    }
+    prio
+}
+
+unsafe fn apply_ai_smart_airbase_once(pie: usize) {
+    if AI_SMART_AIRBASE_DEFINES_APPLIED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let mut updated = 0usize;
+    let mut raise_fp64 = |off: usize, target: i64| {
+        let p = (pie + off) as *mut i64;
+        let cur = unsafe { *p };
+        if cur > 0 && cur < target {
+            unsafe { *p = target };
+            updated += 1;
+        }
+    };
+    raise_fp64(OFF_NDEF_WANTED_PLANES_FAC, 75_000);     // 0.50 -> 0.75
+    raise_fp64(OFF_NDEF_AIR_COV_STAY_PUT, 75_000);      // 0.50 -> 0.75 (Sheep AI: rebase closer when coverage < 75%)
+    raise_fp64(OFF_NDEF_OUR_COMBATS_AIR, 45_000_000);   // 155 -> 450 (focus air & base demand on active combats)
+    raise_fp64(OFF_NDEF_FIGHTERS_PER_PLN, 200_000);     // 1.0 -> 2.0
+    raise_fp64(OFF_NDEF_DEF_SUPPLY_AIR, 900_000);       // 4.0 -> 9.0 (Sheep AI: protect supply hubs from logistics bombing)
+    eprintln!(
+        "[hoi4-rust-accel] AI Smart Airbase active: air_base queue prio 3.2x (0.50->1.60) + {}/5 air-coverage defines tuned",
+        updated
+    );
+}
+
+// ============================================================================
+// v1.1 Module 15: Tactical Prudence & Force Concentration (Sheep AI / Discord AI)
+// Strictly adjusts NDefines::NAI decision weights (zero player/combat cheats).
+// ============================================================================
+unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
+    if AI_TACTICAL_PRUDENCE_APPLIED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let sanity_str = unsafe { *((pie + OFF_NDEF_ATK_MIN_STR_LOW) as *const i64) };
+    let sanity_enc = unsafe { *((pie + OFF_NDEF_ENCIRCLE_DISC_HRS) as *const i32) };
+    if sanity_str <= 0 || sanity_enc <= 0 {
+        return;
+    }
+
+    let raise_fp64 = |off: usize, min_target: i64| -> usize {
+        let p = (pie + off) as *mut i64;
+        if unsafe { *p } < min_target {
+            unsafe { *p = min_target };
+            1
+        } else {
+            0
+        }
+    };
+    let lower_fp64 = |off: usize, max_target: i64| -> usize {
+        let p = (pie + off) as *mut i64;
+        if unsafe { *p } > max_target {
+            unsafe { *p = max_target };
+            1
+        } else {
+            0
+        }
+    };
+    let raise_i32 = |off: usize, min_target: i32| -> usize {
+        let p = (pie + off) as *mut i32;
+        if unsafe { *p } < min_target {
+            unsafe { *p = min_target };
+            1
+        } else {
+            0
+        }
+    };
+    let lower_i32 = |off: usize, max_target: i32| -> usize {
+        let p = (pie + off) as *mut i32;
+        if unsafe { *p } > max_target {
+            unsafe { *p = max_target };
+            1
+        } else {
+            0
+        }
+    };
+
+    let mut changed = 0usize;
+    // 1. Stop suicidal low-strength grinding & abort losing attacks in 20h instead of 48h
+    changed += raise_fp64(OFF_NDEF_ATK_MIN_STR_LOW, 75_000);    // 0.60 -> 0.75 (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_ATK_MIN_STR_MED, 65_000);    // 0.50 -> 0.65 (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_ATK_MIN_ORG_HIGH, 52_000);   // 0.45 -> 0.52
+    changed += raise_fp64(OFF_NDEF_ATK_MIN_STR_HIGH, 50_000);   // 0.30 -> 0.50 (Sheep AI: stop 30% strength divisions melting)
+    changed += lower_fp64(OFF_NDEF_CANCEL_DISADV_RAT, 125_000); // 1.50 -> 1.25
+    changed += lower_i32(OFF_NDEF_CANCEL_MIN_DUR_HR, 20);       // 48h  -> 20h
+    changed += raise_fp64(OFF_NDEF_DESP_WEAK_STR_LIM, 65_000);  // 0.35 -> 0.65
+
+    // 2. Smarter front assessment, terrain discipline & entrenchment preservation
+    changed += raise_fp64(OFF_NDEF_FRONT_EVAL_ACC, 150_000);     // 1.00 -> 1.50 (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_FRONT_EVAL_AIR, 200_000);     // 1.00 -> 2.00 (Sheep AI: respect air superiority)
+    changed += raise_fp64(OFF_NDEF_FRONT_EVAL_SUPLCK, 150_000);  // 1.00 -> 1.50 (Sheep AI: avoid overstacking low-supply pockets)
+    changed += raise_fp64(OFF_NDEF_TERRAIN_IMPORT, 1_000_000);   // >= 10.0
+    changed += lower_fp64(OFF_NDEF_TANKS_MOUNTAINS, -1_500_000); // <= -15.0 (Sheep AI: keep tanks out of mountains)
+    changed += lower_fp64(OFF_NDEF_TANKS_JUNGLE, -2_000_000);    // <= -20.0 (Sheep AI: keep tanks out of jungles)
+    changed += raise_fp64(OFF_NDEF_ENTRENCH_WEIGHT, 400_000);    // 2.0  -> 4.0  (Sheep AI: stop shuffling dug-in line infantry)
+
+    // 3. Daily pocket/bulge detection & weak-point micro-attacks
+    changed += lower_i32(OFF_NDEF_ENCIRCLE_DISC_HRS, 24);        // 72h  -> 24h (daily encirclement discovery)
+    changed += raise_fp64(OFF_NDEF_BULGE_LOW_CUTOFF, 120_000);   // 0.95 -> 1.20 (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_BULGE_HIGH_CUTOFF, 180_000);  // 1.50 -> 1.80 (Sheep AI)
+    changed += lower_i32(OFF_NDEF_CUTOFF_EDGE_PROX, 1);          // 2    -> 1    (Sheep AI)
+    changed += raise_i32(OFF_NDEF_MAX_MICRO_ATKS, 5);            // 3    -> 5    (Sheep AI: opportunistic weak-point probes)
+    changed += lower_fp64(OFF_NDEF_MICRO_INACT_VAL, 15_000);     // 0.25 -> 0.15 (Sheep AI)
+
+    // 4. Armored/Shock Force Concentration (AIFC — Sheep AI / Discord AI spearheads)
+    changed += lower_i32(OFF_NDEF_AIFC_UPD_DAYS, 4);             // 5d   -> 4d
+    changed += raise_fp64(OFF_NDEF_AIFC_UNIT_RATIO, 22_000);     // 0.15 -> 0.22 (22% shock spearhead allocation)
+    changed += raise_fp64(OFF_NDEF_AIFC_ACTIVATE_ORG, 42_000);   // 0.20 -> 0.42 (wait for 42% org before launching spearhead!)
+    changed += lower_i32(OFF_NDEF_AIFC_NUDGE_DAYS, 10);          // 15d  -> 10d
+    changed += raise_fp64(OFF_NDEF_AIFC_HARDNESS, 80_000_000);   // 300  -> 800  (Sheep AI: pack armor/mech into spearheads)
+    changed += raise_fp64(OFF_NDEF_AIFC_ARMOR, 8_000_000);       // 30   -> 80   (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_AIFC_SOFT_ATK, 1_200_000);    // 6    -> 12   (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_AIFC_HARD_ATK, 1_600_000);    // 8    -> 16   (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_AIFC_EXPERIENCE, 50_000_000); // 300  -> 500  (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_AIFC_TGT_SUPPLY, 3_000_000);  // 20   -> 30   (Sheep AI: aim spearheads at enemy supply hubs)
+    changed += raise_fp64(OFF_NDEF_AIFC_TGT_PORT, 1_500_000);    // 10   -> 15   (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_AIFC_TGT_PORT_LVL, 200_000);  // 1    -> 2    (Sheep AI)
+    changed += raise_fp64(OFF_NDEF_AIFC_COST_MTN, 400_000);      // 3.0  -> 4.0  (Sheep AI: route spearheads around mountains)
+
+    eprintln!(
+        "[hoi4-rust-accel] AI Tactical Prudence & AIFC Spearheads active ({}/33 Sheep-AI-based non-cheating NAI defines tuned)",
+        changed
+    );
 }
 
 // ============================================================================
@@ -2414,7 +2660,7 @@ fn emit_report(measured_hours: u64) {
     zones.sort_by(|a, b| b.2.cmp(&a.2));
 
     let mut out = String::new();
-    out.push_str("\n================ HOI4 RUST ACCEL v1.0 REPORT ================\n");
+    out.push_str("\n================ HOI4 RUST ACCEL v1.1 REPORT ================\n");
     out.push_str(&format!(
         "Measured Hours : {} ({:.2} game days)\n",
         measured_hours,
@@ -2433,7 +2679,7 @@ fn emit_report(measured_hours: u64) {
     let tf_fps = if tf_ns > 0 { 1_000_000_000 / tf_ns } else { 0 };
     let sf_fps = SMOOTH_FPS.load(Ordering::Relaxed);
     out.push_str(&format!(
-        "Config         : target_fps={} smooth_fps={} fast_alloc={} fast_mod={} country_grain={} civil_war_fix={} ai_smart_supply={} ai_throttle_minors={} fast_sched={} fast_wait={} fast_yield={} fast_event={} no_job_clock={} affinity={} quiet_log={} fast_save={} no_telemetry={}\n",
+        "Config         : target_fps={} smooth_fps={} fast_alloc={} fast_mod={} country_grain={} civil_war_fix={} ai_smart_supply={} ai_smart_airbase={} ai_tactical_prudence={} ai_throttle_minors={} fast_sched={} fast_wait={} fast_yield={} fast_event={} no_job_clock={} affinity={} quiet_log={} fast_save={} no_telemetry={}\n",
         tf_fps,
         sf_fps,
         FAST_ALLOC_ENABLED.load(Ordering::Relaxed),
@@ -2441,6 +2687,8 @@ fn emit_report(measured_hours: u64) {
         COUNTRY_GRAIN_ENABLED.load(Ordering::Relaxed),
         CIVIL_WAR_FIX_ENABLED.load(Ordering::Relaxed),
         AI_SMART_SUPPLY_ENABLED.load(Ordering::Relaxed),
+        AI_SMART_AIRBASE_ENABLED.load(Ordering::Relaxed),
+        AI_TACTICAL_PRUDENCE_ENABLED.load(Ordering::Relaxed),
         AI_THROTTLE_MINORS_ENABLED.load(Ordering::Relaxed),
         FAST_SCHED_ENABLED.load(Ordering::Relaxed),
         FAST_TASK_WAIT_ENABLED.load(Ordering::Relaxed),
@@ -2541,6 +2789,18 @@ fn emit_report(measured_hours: u64) {
         out.push_str(&format!(
             "CivilWarFix    : {} redundant mid-split map/supply rebuilds coalesced\n",
             CW_REBUILDS_COALESCED.load(Ordering::Relaxed)
+        ));
+    }
+    if AI_SMART_AIRBASE_ENABLED.load(Ordering::Relaxed) {
+        out.push_str(&format!(
+            "SmartAirbase   : {} queued air_base priority evaluations boosted (3.2x)\n",
+            AIRBASE_PRIO_BOOSTS.load(Ordering::Relaxed)
+        ));
+    }
+    if AI_TACTICAL_PRUDENCE_ENABLED.load(Ordering::Relaxed) {
+        out.push_str(&format!(
+            "TacticalAI     : Sheep-AI-based prudence & AIFC spearheads active (applied={})\n",
+            AI_TACTICAL_PRUDENCE_APPLIED.load(Ordering::Relaxed)
         ));
     }
     if AI_THROTTLE_MINORS_ENABLED.load(Ordering::Relaxed) {
@@ -2895,7 +3155,7 @@ unsafe extern "C" fn hoi4_accel_init() {
         });
 
     eprintln!(
-        "[hoi4-rust-accel v1.0] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
+        "[hoi4-rust-accel v1.1] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
         std::process::id(),
         base,
         preset
@@ -2916,6 +3176,34 @@ unsafe extern "C" fn hoi4_accel_init() {
     if want_ai_smart_supply {
         AI_SMART_SUPPLY_ENABLED.store(true, Ordering::Release);
     }
+    let mut want_ai_smart_airbase =
+        !noop_mode && cfg_bool("HOI4_ACCEL_AI_SMART_AIRBASE", "ai_smart_airbase", def_core);
+    if want_ai_smart_airbase {
+        if let Some(tramp_ab) = unsafe {
+            install_trampoline_hook(
+                base + OFF_GET_BLDG_QUEUE_PRIO,
+                &SIG_GET_BLDG_QUEUE_PRIO,
+                hook_get_bldg_queue_prio as *const () as usize,
+            )
+        } {
+            ORIG_GET_BLDG_QUEUE_PRIO.store(tramp_ab, Ordering::Release);
+            AI_SMART_AIRBASE_ENABLED.store(true, Ordering::Release);
+            eprintln!(
+                "[hoi4-rust-accel] Enabled AiSmartAirbase (CAIConstruction::GetBuildingQueuePrio @ 0x74f4d0)"
+            );
+        } else {
+            want_ai_smart_airbase = false;
+        }
+    }
+    let want_ai_tactical_prudence = !noop_mode
+        && cfg_bool(
+            "HOI4_ACCEL_AI_TACTICAL_PRUDENCE",
+            "ai_tactical_prudence",
+            def_core,
+        );
+    if want_ai_tactical_prudence {
+        AI_TACTICAL_PRUDENCE_ENABLED.store(true, Ordering::Release);
+    }
 
     let bench_hrs = cfg_u64("HOI4_BENCH_HOURS", "bench_hours", 0);
     if bench_hrs > 0 {
@@ -2932,7 +3220,7 @@ unsafe extern "C" fn hoi4_accel_init() {
         need_scoped_timer = true;
     }
 
-    // Breakthrough 1: Render-Aware Multi-Tick Speed-5 Bursting (also drives lazy AI Smart Supply init)
+    // Breakthrough 1: Render-Aware Multi-Tick Speed-5 Bursting (also drives lazy AI NDefines init)
     let target_fps = if noop_mode {
         0
     } else {
@@ -2941,7 +3229,9 @@ unsafe extern "C" fn hoi4_accel_init() {
     let need_session_hook = (target_fps >= 1 && target_fps <= 240)
         || BENCH_MAX_HOURS.load(Ordering::Relaxed) > 0
         || COLLECT_ZONES.load(Ordering::Relaxed)
-        || want_ai_smart_supply;
+        || want_ai_smart_supply
+        || want_ai_smart_airbase
+        || want_ai_tactical_prudence;
     if need_session_hook {
         let frame_ns = if target_fps >= 1 && target_fps <= 240 {
             1_000_000_000 / target_fps

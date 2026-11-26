@@ -1,8 +1,8 @@
 [package]
 name = "hoi4-rust-accel"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
-description = "Native Rust v1.0 engine & AI accelerator for Hearts of Iron IV (Linux x86_64)"
+description = "Native Rust v1.1 engine & AI accelerator for Hearts of Iron IV (Linux x86_64)"
 
 [lib]
 name = "hoi4_rust_accel"
