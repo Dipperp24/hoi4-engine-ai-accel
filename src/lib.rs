@@ -1,4 +1,4 @@
-//! hoi4-rust-accel v1.2: Native Rust Engine & AI Accelerator for Hearts of Iron IV (Linux x86_64 v1.20.0.0)
+//! hoi4-rust-accel v1.3: Native Rust Engine & AI Accelerator for Hearts of Iron IV (Linux x86_64 v1.20.0.0)
 //!
 //! Features (non-destructive LD_PRELOAD, configurable via `hoi4_accel.ini` or `HOI4_ACCEL_*` env vars):
 //!   1. fast_sched / HOI4_ACCEL_FAST_SCHED=1       : Lock-free zero-bounce Rust worker scheduler (PopTaskOrWait @ 0x3666d70).
@@ -13,14 +13,15 @@
 //!  10. fast_mod / HOI4_ACCEL_FAST_MOD=1           : Branchless CMOV binary search CModifier::GetValue (0x2241b00).
 //!  11. fast_alloc / HOI4_ACCEL_FAST_ALLOC=1       : 128 MB lock-free ABA-safe slab + TLS magazine on CPdxNewDeleteAllocator (0x4349510).
 //!  12. civil_war_fix / HOI4_ACCEL_CIVIL_WAR_FIX=1 : Coalesces 100+ per-state map/supply overlay rebuilds in CCivilWarSetup::Execute (0x1bdfa80).
-//!  13. ai_smart_supply / HOI4_ACCEL_AI_SMART_SUPPLY=1 : Proactive AI railway, supply-hub & truck motorization logistics.
+//!  13. ai_smart_supply / HOI4_ACCEL_AI_SMART_SUPPLY=1 : Proactive AI railway, motorization & native wartime land `supply_node` auto-builder (FixSupplyBottlenecks @ 0x742d40).
 //!  14. ai_smart_airbase / HOI4_ACCEL_AI_SMART_AIRBASE=1 : Boosts needed frontline air_base queue prio (0x74f4d0) + coverage rebasing.
-//!  15. ai_tactical_prudence / HOI4_ACCEL_AI_TACTICAL_PRUDENCE=1 : Non-cheating Sheep-AI tactical prudence, equipment conservation & AIFC spearheads (zero empty-tile stall).
-//!  16. ai_smart_peace / HOI4_ACCEL_AI_SMART_PEACE=1 : Anti-bordergore peace conference scoring (CPeaceWinnerAi::CalcStateActionScore @ 0xeafef0).
-//!  17. ai_throttle_minors / HOI4_ACCEL_AI_THROTTLE_MINORS=1 : Staggered hourly AI fast-skip strictly for peaceful non-major AI minors.
-//!  18. quiet_log / HOI4_ACCEL_QUIET_LOG=1         : Lock-free error.log spam deduplicator v2 (SetLogger @ 0x361bec0, line-number immune).
-//!  19. fast_save / HOI4_ACCEL_FAST_SAVE=1         : Removes blocking synchronous fsync() stalls during saves (0x3672b60).
-//!  20. no_telemetry / HOI4_ACCEL_NO_TELEMETRY=1   : Disables Paradox SDK QueueAndSendTelemetry (0x315d2af) cleanly.
+//!  15. ai_tactical_prudence / HOI4_ACCEL_AI_TACTICAL_PRUDENCE=1 : Non-cheating Sheep-AI tactical prudence, equipment conservation, AIFC spearheads & total empty-tile stall fix (0x2569860 + micro gate).
+//!  16. ai_smart_armor / HOI4_ACCEL_AI_SMART_ARMOR=1 : Dynamic industrial-scaled armor/mechanized strategy & tank template/upgrade AI (CAIStrategyStore::GetStrategyValue @ 0x434ea90+0x28).
+//!  17. ai_smart_peace / HOI4_ACCEL_AI_SMART_PEACE=1 : Anti-bordergore peace conference scoring (CPeaceWinnerAi::CalcStateActionScore @ 0xeafef0).
+//!  18. ai_throttle_minors / HOI4_ACCEL_AI_THROTTLE_MINORS=1 : Staggered hourly AI fast-skip strictly for peaceful non-major AI minors.
+//!  19. quiet_log / HOI4_ACCEL_QUIET_LOG=1         : Lock-free error.log spam deduplicator v2 (SetLogger @ 0x361bec0, line-number immune).
+//!  20. fast_save / HOI4_ACCEL_FAST_SAVE=1         : Removes blocking synchronous fsync() stalls during saves (0x3672b60).
+//!  21. no_telemetry / HOI4_ACCEL_NO_TELEMETRY=1   : Disables Paradox SDK QueueAndSendTelemetry (0x315d2af) cleanly.
 
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
@@ -94,7 +95,8 @@ const OFF_INGAME_IDLER_VT: usize = 0x4467770;
 const OFF_IDLER_MAP_REBUILD_SLOT: usize = 0x240;
 const OFF_IDLER_MAP_REBUILD_FN: usize = 0x21aa250;
 
-// v1.0 -> v1.1: NDefines::NAI & NDefines::NAITheatre supply/railway/motorization globals (.bss)
+// v1.0 -> v1.3: NDefines::NAI & NDefines::NAITheatre supply/railway/motorization globals (.bss)
+// + Native Wartime Land `supply_node` Auto-Builder (FixSupplyBottlenecks @ 0x742d40)
 const OFF_NDEF_PRIO_SUPPLY_BLDG: usize = 0x4594d68; // i64 CFixedPoint64 (x100,000), vanilla 1.10 = 110_000
 const OFF_NDEF_PRIO_RAILWAY: usize = 0x4594d78;     // i64 CFixedPoint64 (x100,000), vanilla 4.00 = 400_000
 const OFF_NDEF_SUPPLY_FREQ_HRS: usize = 0x4595788;  // i32 hours, vanilla 168 (1 week)
@@ -103,6 +105,46 @@ const OFF_NDEF_SUPPLY_MOT_FREQ: usize = 0x45957a8;  // i32 hours, vanilla 52
 const OFF_NDEF_DIV_SUPPLY_MOT: usize = 0x4595e48;   // i64 CFixedPoint64 (x100,000), vanilla 0.80 = 80_000
 const OFF_NDEF_SUPPLY_MAX_DEPTH: usize = 0x4596458; // i64 CFixedPoint64 (x100,000), vanilla 5.00 = 500_000
 const OFF_NDEF_SUPPLY_CRISIS_LIM: usize = 0x4596468;// i64 CFixedPoint64 (x100,000), vanilla 0.10 = 10_000
+const OFF_FIX_SUPPLY_BOTTLENECKS: usize = 0x742d40;
+const OFF_BASE_AI_GET_TAG: usize = 0x6f0a50;
+const OFF_BASE_AI_GET_COUNTRY: usize = 0x6efd10;
+const OFF_BLDG_DB_PTR: usize = 0x453d360;
+const OFF_BLDG_PROD_LINE_VT: usize = 0x43a13d8;
+const OFF_COUNTRY_UNITS_DATA: usize = 0x290;
+const OFF_COUNTRY_UNITS_LEN: usize = 0x29c;
+const OFF_COUNTRY_CONSTR_PTR: usize = 0xf40;
+const OFF_PROV_ID: usize = 0xa4;
+const OFF_PROV_STATIC_DATA: usize = 0xd8;
+const OFF_PROV_BLDG_CONTAINER: usize = 0x1b0;
+const OFF_BLDG_CONT_CTRL_TAG: usize = 0x898e60;
+const OFF_BLDG_CONT_CAN_CONSTR: usize = 0x896af0;
+const OFF_BLDG_LEVEL_INIT: usize = 0x8933c0;
+const OFF_BLDG_LEVEL_GET: usize = 0x892ec0;
+const OFF_SBLDG_LOC_CTOR: usize = 0x8963c0;
+const OFF_OP_NEW_PLT: usize = 0x513950;
+const OFF_ADD_CONSTR_CMD_CTOR: usize = 0x1ce1b20;
+const OFF_SESSION_POST: usize = 0x20b14c0;
+const ADD_CONSTR_CMD_SIZE: usize = 0x48;
+
+// v1.3: Active-Battleplan Empty-Tile `too_weak` Fix (CUnitOrder @ 0x2569859)
+// Unblocks empty-tile capture (`HasLandUnitsInProvince == 0`); CanMoveIntoProvince still runs right after!
+const OFF_EMPTY_TILE_SIG: usize = 0x2569859;
+const OFF_EMPTY_TILE_PATCH: usize = 0x2569860;
+
+// v1.3: Smart Armored & Mechanized AI (CAIStrategyStore::GetStrategyValue vtable + tank/upgrade NDefines::NAI)
+const OFF_STRATEGY_STORE_VT: usize = 0x434ea90;
+const OFF_STRATEGY_GET_VAL_SLOT: usize = 0x28;
+const OFF_STRATEGY_GET_VAL_FN: usize = 0x85b570;
+const OFF_CTOKEN_FROM_STRING: usize = 0x35f9550;
+const OFF_NDEF_UPG_DEFICIT_DAYS: usize = 0x4594938;   // i32  (60 -> 210)
+const OFF_NDEF_UPG_PCT_FORCES: usize = 0x4593aa8;     // fp64 (20_000 -> 35_000)
+const OFF_NDEF_UPG_DIV_RELUCT: usize = 0x4593a98;     // i32  (7 -> 4)
+const OFF_NDEF_VAR_XP_MOD_LAND: usize = 0x4592d38;    // i32  (35 -> 20)
+const OFF_NDEF_VAR_XP_LEG_LAND: usize = 0x4592d68;    // i32  (35 -> 20)
+const OFF_NDEF_VAR_XP_RES_LAND: usize = 0x4592d98;    // i32  (50 -> 30)
+const OFF_NDEF_XP_UPG_LAND_EQ: usize = 0x4592f58;     // fp64 (100_000 -> 200_000)
+const OFF_NDEF_XP_UPD_LAND_TMPL: usize = 0x4592f48;   // fp64 (200_000 -> 250_000)
+const OFF_NDEF_ASSIGN_TANKS_WAR: usize = 0x4594788;   // fp64 (600_000 -> 1_000_000)
 
 // v1.1: Smart Airbase Expansion (CAIConstruction::GetBuildingQueuePrio + Air Coverage NDefines::NAI)
 const OFF_GET_BLDG_QUEUE_PRIO: usize = 0x74f4d0;
@@ -248,6 +290,13 @@ const SIG_PEACE_CALC_STATE_SCORE: [u8; 20] = [
     0xec, 0xf8, 0x00, 0x00, 0x00,
 ];
 const SIG_PEACE_IS_STATE_CLAIMED: [u8; 8] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x8f, 0xf0];
+const SIG_FIX_SUPPLY_BOTTLENECKS: [u8; 17] = [
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83,
+    0xec, 0x68,
+];
+const SIG_EMPTY_TILE_BRANCH: [u8; 12] = [
+    0x80, 0xbd, 0x40, 0xff, 0xff, 0xff, 0x00, 0x75, 0xde, 0x49, 0x8b, 0x06,
+];
 
 // ============================================================================
 // Raw Linux libc / syscalls (zero external crate dependencies)
@@ -357,6 +406,26 @@ type CountryAiPassFn = unsafe extern "C" fn(*mut u8, usize, usize);
 type OwnerAccessCountryFn = unsafe extern "C" fn(*mut u8) -> *mut u8;
 type CountryHasHumanFn = unsafe extern "C" fn(*mut u8) -> u8;
 type DiploIsAtWarFn = unsafe extern "C" fn(*const u8, u8) -> u8;
+type FixSupplyBottlenecksFn = unsafe extern "C" fn(*mut u8);
+type BaseAiResolveFn = unsafe extern "C" fn(*mut u8) -> *mut u8;
+type BaseAiGetTagFn = unsafe extern "C" fn(*mut u8) -> *const u32;
+type GsGetProvinceFn = unsafe extern "C" fn(*const u8, i32) -> *const u8;
+type BldgContCtrlTagFn = unsafe extern "C" fn(*const u8) -> *const u32;
+type BldgContCanConstrFn = unsafe extern "C" fn(*const u8, *const u8, u8) -> u8;
+type BldgLevelInitFn = unsafe extern "C" fn(*mut [u64; 4], *const u8, *const u8);
+type BldgLevelGetFn = unsafe extern "C" fn(*mut [u64; 4]) -> i32;
+type SBldgLocCtorFn = unsafe extern "C" fn(*mut [u64; 4], *const u8, *const u8);
+type OpNewFn = unsafe extern "C" fn(usize) -> *mut u8;
+type AddConstrCmdCtorFn = unsafe extern "C" fn(*mut u8, u8, *const u32, *const [u64; 4], i32);
+type SessionPostFn = unsafe extern "C" fn(*mut u8, *const u32);
+type GetStrategyValueFn = unsafe extern "C" fn(*const u8, i32, i32, i32) -> i32;
+
+#[repr(C)]
+struct LinStrView {
+    len: u64,
+    ptr: *const u8,
+}
+type CTokenFromStringFn = unsafe extern "C" fn(*const LinStrView) -> i32;
 
 unsafe extern "C" {
     fn mmap(
@@ -633,9 +702,15 @@ static IN_CIVIL_WAR_DEPTH: AtomicU32 = AtomicU32::new(0);
 static DEFERRED_CW_IDLER: AtomicUsize = AtomicUsize::new(0);
 static CW_REBUILDS_COALESCED: AtomicU64 = AtomicU64::new(0);
 
-// v1.0 Module 13: Smart AI Supply & Railway Construction
+// v1.0 -> v1.3 Module 13: Smart AI Supply, Railway & Native Wartime `supply_node` Auto-Builder
 static AI_SMART_SUPPLY_ENABLED: AtomicBool = AtomicBool::new(false);
 static AI_SMART_SUPPLY_APPLIED: AtomicBool = AtomicBool::new(false);
+static ORIG_FIX_SUPPLY_BOTTLENECKS: AtomicUsize = AtomicUsize::new(0);
+static SUPPLY_NODE_BLDG_PTR: AtomicUsize = AtomicUsize::new(0);
+static NAVAL_BASE_BLDG_PTR: AtomicUsize = AtomicUsize::new(0);
+static BLDG_DB_RESOLVED: AtomicBool = AtomicBool::new(false);
+static SUPPLY_HUB_LAST_HR: [AtomicU32; 512] = [const { AtomicU32::new(0) }; 512];
+static AI_SUPPLY_HUBS_QUEUED: AtomicU64 = AtomicU64::new(0);
 
 // v1.1 Module 14: Smart Airbase Expansion (CAIConstruction::GetBuildingQueuePrio + Air Coverage NDefines)
 static AI_SMART_AIRBASE_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -643,11 +718,21 @@ static AI_SMART_AIRBASE_DEFINES_APPLIED: AtomicBool = AtomicBool::new(false);
 static ORIG_GET_BLDG_QUEUE_PRIO: AtomicUsize = AtomicUsize::new(0);
 static AIRBASE_PRIO_BOOSTS: AtomicU64 = AtomicU64::new(0);
 
-// v1.1 -> v1.2 Module 15: Tactical Prudence, Equipment Conservation & AIFC Spearheads
+// v1.1 -> v1.3 Module 15: Tactical Prudence, Equipment Conservation, AIFC Spearheads & Empty-Tile Total Fix
 static AI_TACTICAL_PRUDENCE_ENABLED: AtomicBool = AtomicBool::new(false);
 static AI_TACTICAL_PRUDENCE_APPLIED: AtomicBool = AtomicBool::new(false);
+static EMPTY_TILE_FIX_APPLIED: AtomicBool = AtomicBool::new(false);
 
-// v1.2 Module 16: Smart Peace Conference Anti-Bordergore (CPeaceWinnerAi::CalcStateActionScore)
+// v1.3 Module 16: Smart Armored & Mechanized AI (CAIStrategyStore::GetStrategyValue + Tank NDefines)
+static AI_SMART_ARMOR_ENABLED: AtomicBool = AtomicBool::new(false);
+static AI_SMART_ARMOR_DEFINES_APPLIED: AtomicBool = AtomicBool::new(false);
+static ORIG_GET_STRATEGY_VALUE: AtomicUsize = AtomicUsize::new(0);
+static TOK_ARMOR: AtomicI32 = AtomicI32::new(-1);
+static TOK_MECHANIZED: AtomicI32 = AtomicI32::new(-1);
+static TOK_INFANTRY: AtomicI32 = AtomicI32::new(-1);
+static AI_ARMOR_STRATEGY_BOOSTS: AtomicU64 = AtomicU64::new(0);
+
+// v1.2 Module 17: Smart Peace Conference Anti-Bordergore (CPeaceWinnerAi::CalcStateActionScore)
 static AI_SMART_PEACE_ENABLED: AtomicBool = AtomicBool::new(false);
 static AI_SMART_PEACE_DEFINES_APPLIED: AtomicBool = AtomicBool::new(false);
 static ORIG_PEACE_CALC_STATE_SCORE: AtomicUsize = AtomicUsize::new(0);
@@ -701,6 +786,11 @@ unsafe extern "C" fn hook_session_update(app: *mut u8) {
                 && !AI_TACTICAL_PRUDENCE_APPLIED.load(Ordering::Relaxed)
             {
                 unsafe { apply_ai_tactical_prudence_once(pie_for_state) };
+            }
+            if AI_SMART_ARMOR_ENABLED.load(Ordering::Relaxed)
+                && !AI_SMART_ARMOR_DEFINES_APPLIED.load(Ordering::Relaxed)
+            {
+                unsafe { apply_ai_smart_armor_once(pie_for_state) };
             }
             if AI_SMART_PEACE_ENABLED.load(Ordering::Relaxed)
                 && !AI_SMART_PEACE_DEFINES_APPLIED.load(Ordering::Relaxed)
@@ -1503,9 +1593,514 @@ unsafe extern "C" fn hook_cw_setup_exec(self_ptr: *mut u8, out_tag: *mut u8, fla
 }
 
 // ============================================================================
-// v1.0 Module 13: Smart AI Supply & Railway Construction (Mod-Safe Clamping)
+// v1.0 -> v1.3 Module 13: Smart AI Supply, Railways & Native Wartime Land
+// `supply_node` Auto-Builder (FixSupplyBottlenecks @ 0x742d40)
 // Applied lazily once g_pGameState != null (after 00_defines.lua & mods load)
 // ============================================================================
+unsafe fn resolve_supply_buildings_once(pie: usize) {
+    if BLDG_DB_RESOLVED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let db = unsafe { *((pie + OFF_BLDG_DB_PTR) as *const *const u8) };
+    if db.is_null() {
+        BLDG_DB_RESOLVED.store(false, Ordering::Release);
+        return;
+    }
+    let names = unsafe { *(db.add(0x88) as *const *const u8) };
+    let names_len = unsafe { *(db.add(0x94) as *const i32) };
+    let bldgs = unsafe { *(db.add(0x70) as *const *const *const u8) };
+    let bldgs_len = unsafe { *(db.add(0x7c) as *const i32) };
+    if names.is_null() || bldgs.is_null() || names_len <= 0 || bldgs_len <= 1 {
+        BLDG_DB_RESOLVED.store(false, Ordering::Release);
+        return;
+    }
+    let cap = (names_len as usize).min(128);
+    let bcap = bldgs_len as usize;
+    for i in 0..cap {
+        if i + 1 >= bcap {
+            break;
+        }
+        let entry = unsafe { names.add(i * 0x28) };
+        let sptr = unsafe { *(entry as *const *const u8) };
+        let slen = unsafe { *(entry.add(0x08) as *const usize) };
+        if sptr.is_null() || slen == 0 || slen > 64 {
+            continue;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(sptr, slen) };
+        let bptr = unsafe { *bldgs.add(i + 1) } as usize;
+        if bptr == 0 {
+            continue;
+        }
+        if bytes == b"supply_node" {
+            SUPPLY_NODE_BLDG_PTR.store(bptr, Ordering::Release);
+        } else if bytes == b"naval_base" {
+            NAVAL_BASE_BLDG_PTR.store(bptr, Ordering::Release);
+        }
+    }
+}
+
+#[inline(always)]
+unsafe fn get_bldg_level_in_prov(pie: usize, bldg: *const u8, container: *const u8) -> i32 {
+    if bldg.is_null() || container.is_null() {
+        return 0;
+    }
+    let init_fn: BldgLevelInitFn = unsafe { std::mem::transmute(pie + OFF_BLDG_LEVEL_INIT) };
+    let get_fn: BldgLevelGetFn = unsafe { std::mem::transmute(pie + OFF_BLDG_LEVEL_GET) };
+    let mut handle = [0u64; 4];
+    unsafe { init_fn(&mut handle, bldg, container) };
+    unsafe { get_fn(&mut handle) }
+}
+
+unsafe fn prov_borders_non_own_land(
+    pie: usize,
+    gs: *const u8,
+    get_prov: GsGetProvinceFn,
+    prov: *const u8,
+    tag_id: u32,
+) -> bool {
+    let sp = unsafe { *(prov.add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+    if sp.is_null() {
+        return false;
+    }
+    let adj_ptr = unsafe { *(sp.add(0x70) as *const *const u8) };
+    let adj_len = unsafe { *(sp.add(0x7c) as *const i32) };
+    if adj_ptr.is_null() || adj_len <= 0 {
+        return false;
+    }
+    let get_ctrl: BldgContCtrlTagFn = unsafe { std::mem::transmute(pie + OFF_BLDG_CONT_CTRL_TAG) };
+    let cap = (adj_len as usize).min(32);
+    for j in 0..cap {
+        let adj = unsafe { adj_ptr.add(j * 0x30) };
+        if unsafe { *adj.add(0x10) } == 4 {
+            continue; // impassable
+        }
+        let nb_id = unsafe { *(adj.add(0x08) as *const i32) };
+        if nb_id <= 0 {
+            continue;
+        }
+        let nb_p = unsafe { get_prov(gs, nb_id) };
+        if nb_p.is_null() {
+            continue;
+        }
+        let nb_sp = unsafe { *(nb_p.add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+        if nb_sp.is_null() || (unsafe { *nb_sp.add(0xd2) } & 1) == 0 {
+            continue;
+        }
+        let nb_ctrl = unsafe { get_ctrl(nb_p.add(OFF_PROV_BLDG_CONTAINER)) };
+        if !nb_ctrl.is_null() {
+            let cid = unsafe { *nb_ctrl };
+            if cid != 0 && cid != tag_id {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+unsafe fn has_hub_or_port_within_3_hops(
+    pie: usize,
+    gs: *const u8,
+    get_prov: GsGetProvinceFn,
+    start_prov: *const u8,
+    supply_node: *const u8,
+    naval_base: *const u8,
+) -> bool {
+    let mut visited = [0i32; 64];
+    let mut vis_len = 0usize;
+    let mut queue_p = [std::ptr::null::<u8>(); 64];
+    let mut queue_d = [0u8; 64];
+    let mut q_head = 0usize;
+    let mut q_tail = 0usize;
+
+    let start_id = unsafe { *(start_prov.add(OFF_PROV_ID) as *const i32) };
+    visited[vis_len] = start_id;
+    vis_len += 1;
+    queue_p[q_tail] = start_prov;
+    queue_d[q_tail] = 0;
+    q_tail += 1;
+
+    while q_head < q_tail {
+        let cur_p = queue_p[q_head];
+        let cur_d = queue_d[q_head];
+        q_head += 1;
+
+        let cont = unsafe { cur_p.add(OFF_PROV_BLDG_CONTAINER) };
+        if unsafe { get_bldg_level_in_prov(pie, supply_node, cont) } > 0 {
+            return true;
+        }
+        if !naval_base.is_null() && unsafe { get_bldg_level_in_prov(pie, naval_base, cont) } > 0 {
+            return true;
+        }
+        if cur_d >= 3 {
+            continue;
+        }
+        let sp = unsafe { *(cur_p.add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+        if sp.is_null() {
+            continue;
+        }
+        let adj_ptr = unsafe { *(sp.add(0x70) as *const *const u8) };
+        let adj_len = unsafe { *(sp.add(0x7c) as *const i32) };
+        if adj_ptr.is_null() || adj_len <= 0 {
+            continue;
+        }
+        let cap = (adj_len as usize).min(32);
+        for j in 0..cap {
+            let adj = unsafe { adj_ptr.add(j * 0x30) };
+            if unsafe { *adj.add(0x10) } == 4 {
+                continue;
+            }
+            let nb_id = unsafe { *(adj.add(0x08) as *const i32) };
+            if nb_id <= 0 {
+                continue;
+            }
+            let mut seen = false;
+            for k in 0..vis_len {
+                if visited[k] == nb_id {
+                    seen = true;
+                    break;
+                }
+            }
+            if seen || vis_len >= 64 || q_tail >= 64 {
+                continue;
+            }
+            let nb_p = unsafe { get_prov(gs, nb_id) };
+            if nb_p.is_null() {
+                continue;
+            }
+            let nb_sp = unsafe { *(nb_p.add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+            if nb_sp.is_null() || (unsafe { *nb_sp.add(0xd2) } & 1) == 0 {
+                continue;
+            }
+            visited[vis_len] = nb_id;
+            vis_len += 1;
+            queue_p[q_tail] = nb_p;
+            queue_d[q_tail] = cur_d + 1;
+            q_tail += 1;
+        }
+    }
+    false
+}
+
+unsafe fn try_queue_wartime_supply_hub(ai_constr: *mut u8) {
+    let pie = PIE_BASE.load(Ordering::Relaxed);
+    if pie == 0 || ai_constr.is_null() {
+        return;
+    }
+    let supply_node = SUPPLY_NODE_BLDG_PTR.load(Ordering::Acquire) as *const u8;
+    if supply_node.is_null() {
+        return;
+    }
+    let naval_base = NAVAL_BASE_BLDG_PTR.load(Ordering::Acquire) as *const u8;
+
+    let gs = unsafe { *((pie + OFF_GAMESTATE_PTR) as *const *const u8) };
+    if gs.is_null() {
+        return;
+    }
+    let gs_vt = unsafe { *(gs as *const *const usize) };
+    if gs_vt.is_null() {
+        return;
+    }
+    let get_prov_addr = unsafe { *gs_vt.add(0x50 / 8) };
+    if get_prov_addr == 0 {
+        return;
+    }
+    let get_prov: GsGetProvinceFn = unsafe { std::mem::transmute(get_prov_addr) };
+
+    // Resolve base_ai, tag_ptr, and country from CAIConstruction*
+    let obj = unsafe { *(ai_constr.add(0x08) as *const *mut u8) };
+    if obj.is_null() {
+        return;
+    }
+    let obj_vt = unsafe { *(obj as *const *const usize) };
+    if obj_vt.is_null() {
+        return;
+    }
+    let get_base_ai_addr = unsafe { *obj_vt.add(0x10 / 8) };
+    if get_base_ai_addr == 0 {
+        return;
+    }
+    let get_base_ai: BaseAiResolveFn = unsafe { std::mem::transmute(get_base_ai_addr) };
+    let base_ai = unsafe { get_base_ai(obj) };
+    if base_ai.is_null() {
+        return;
+    }
+    let get_tag: BaseAiGetTagFn = unsafe { std::mem::transmute(pie + OFF_BASE_AI_GET_TAG) };
+    let get_country: BaseAiResolveFn = unsafe { std::mem::transmute(pie + OFF_BASE_AI_GET_COUNTRY) };
+    let tag_ptr = unsafe { get_tag(base_ai) };
+    let country = unsafe { get_country(base_ai) };
+    if tag_ptr.is_null() || country.is_null() {
+        return;
+    }
+    let tag_id = unsafe { *tag_ptr };
+    if tag_id == 0 {
+        return;
+    }
+
+    // Never interfere with human-controlled nations; only build emergency hubs while at war
+    let has_human: CountryHasHumanFn = unsafe { std::mem::transmute(pie + OFF_COUNTRY_HAS_HUMAN) };
+    if unsafe { has_human(country) } != 0 {
+        return;
+    }
+    let diplo = unsafe { *(country.add(OFF_COUNTRY_DIPLO_PTR) as *const *const u8) };
+    if diplo.is_null() {
+        return;
+    }
+    let is_at_war: DiploIsAtWarFn = unsafe { std::mem::transmute(pie + OFF_DIPLO_IS_AT_WAR) };
+    if unsafe { is_at_war(diplo, 0) } == 0 {
+        return;
+    }
+
+    // Require sufficient industrial base (>= 20 total factories) and ZERO active supply_node in queue
+    let constr = unsafe { *(country.add(OFF_COUNTRY_CONSTR_PTR) as *const *const u8) };
+    if constr.is_null() {
+        return;
+    }
+    let total_fac = unsafe { *(constr.add(0x2d0) as *const i64) } / 100_000;
+    if total_fac < 20 {
+        return;
+    }
+
+    // Per-tag 30-day (720h) cooldown prevents double-posting before queue updates
+    let raw_date = unsafe { *(gs.add(OFF_GS_CDATE_HOURS) as *const i32) };
+    let cur_hours = raw_date.wrapping_sub(0x029c55c0) as u32;
+    let cd_slot = &SUPPLY_HUB_LAST_HR[(tag_id as usize) & 511];
+    let last_hr = cd_slot.load(Ordering::Relaxed);
+    if last_hr != 0 && cur_hours.wrapping_sub(last_hr) < 720 {
+        return;
+    }
+
+    // Strictly max 1 active supply_node in country's construction queue at a time
+    let q_ptr = unsafe { *(constr.add(0x70) as *const *const *const u8) };
+    let q_len = unsafe { *(constr.add(0x7c) as *const i32) };
+    let prod_line_vt = pie + OFF_BLDG_PROD_LINE_VT;
+    if !q_ptr.is_null() && q_len > 0 {
+        let cap = (q_len as usize).min(256);
+        for i in 0..cap {
+            let item = unsafe { *q_ptr.add(i) };
+            if item.is_null() {
+                continue;
+            }
+            if unsafe { *(item as *const usize) } == prod_line_vt {
+                let inner = unsafe { *(item.add(OFF_CONSTR_ITEM_INNER) as *const *const u8) };
+                if !inner.is_null() {
+                    let bldg = unsafe { *(inner.add(OFF_CONSTR_BUILDING_PTR) as *const *const u8) };
+                    if bldg == supply_node {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // Scan country's own land divisions for genuinely starving frontline clusters (< 50% supply)
+    let units_ptr = unsafe { *(country.add(OFF_COUNTRY_UNITS_DATA) as *const *const *const u8) };
+    let units_len = unsafe { *(country.add(OFF_COUNTRY_UNITS_LEN) as *const i32) };
+    if units_ptr.is_null() || units_len < 3 {
+        return;
+    }
+    let get_ctrl: BldgContCtrlTagFn = unsafe { std::mem::transmute(pie + OFF_BLDG_CONT_CTRL_TAG) };
+    let mut starv_ids = [0i32; 64];
+    let mut starv_ptrs = [std::ptr::null::<u8>(); 64];
+    let mut starv_cnts = [0u16; 64];
+    let mut starv_len = 0usize;
+
+    let ucap = (units_len as usize).min(2048);
+    for i in 0..ucap {
+        let unit = unsafe { *units_ptr.add(i) };
+        if unit.is_null() {
+            continue;
+        }
+        let supply_needed = unsafe { *(unit.add(0x38) as *const i64) };
+        let supply_ratio = unsafe { *(unit.add(0x40) as *const i64) };
+        if supply_needed <= 0 || supply_ratio >= 50_000 {
+            continue;
+        }
+        let prov = unsafe { *(unit.add(0x1f0) as *const *const u8) };
+        if prov.is_null() {
+            continue;
+        }
+        let prov_id = unsafe { *(prov.add(OFF_PROV_ID) as *const i32) };
+        if prov_id <= 0 {
+            continue;
+        }
+        let sp = unsafe { *(prov.add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+        if sp.is_null() || (unsafe { *sp.add(0xd2) } & 1) == 0 {
+            continue;
+        }
+        let ctrl = unsafe { get_ctrl(prov.add(OFF_PROV_BLDG_CONTAINER)) };
+        if ctrl.is_null() || unsafe { *ctrl } != tag_id {
+            continue;
+        }
+        let mut found = false;
+        for k in 0..starv_len {
+            if starv_ids[k] == prov_id {
+                starv_cnts[k] = starv_cnts[k].saturating_add(1);
+                found = true;
+                break;
+            }
+        }
+        if !found && starv_len < 64 {
+            starv_ids[starv_len] = prov_id;
+            starv_ptrs[starv_len] = prov;
+            starv_cnts[starv_len] = 1;
+            starv_len += 1;
+        }
+    }
+    if starv_len == 0 {
+        return;
+    }
+
+    // Pick the worst starving local sector (own starving + 1-hop neighbor starving >= 3 divisions)
+    let mut best_idx = usize::MAX;
+    let mut best_score = 0u32;
+    for i in 0..starv_len {
+        let mut score = starv_cnts[i] as u32;
+        let sp = unsafe { *(starv_ptrs[i].add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+        if !sp.is_null() {
+            let adj_ptr = unsafe { *(sp.add(0x70) as *const *const u8) };
+            let adj_len = unsafe { *(sp.add(0x7c) as *const i32) };
+            if !adj_ptr.is_null() && adj_len > 0 {
+                let acap = (adj_len as usize).min(32);
+                for j in 0..acap {
+                    let adj = unsafe { adj_ptr.add(j * 0x30) };
+                    if unsafe { *adj.add(0x10) } == 4 {
+                        continue;
+                    }
+                    let nb_id = unsafe { *(adj.add(0x08) as *const i32) };
+                    for k in 0..starv_len {
+                        if starv_ids[k] == nb_id {
+                            score += starv_cnts[k] as u32;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if score > best_score {
+            best_score = score;
+            best_idx = i;
+        }
+    }
+    if best_idx == usize::MAX || best_score < 3 {
+        return;
+    }
+
+    let worst_prov = starv_ptrs[best_idx];
+    let can_constr: BldgContCanConstrFn =
+        unsafe { std::mem::transmute(pie + OFF_BLDG_CONT_CAN_CONSTR) };
+
+    // Prefer a safe 1-hop friendly rear province if the starving province sits on the active frontline
+    let mut cands = [std::ptr::null::<u8>(); 2];
+    let mut n_cands = 0usize;
+    if unsafe { prov_borders_non_own_land(pie, gs, get_prov, worst_prov, tag_id) } {
+        let sp = unsafe { *(worst_prov.add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+        if !sp.is_null() {
+            let adj_ptr = unsafe { *(sp.add(0x70) as *const *const u8) };
+            let adj_len = unsafe { *(sp.add(0x7c) as *const i32) };
+            if !adj_ptr.is_null() && adj_len > 0 {
+                let acap = (adj_len as usize).min(32);
+                for j in 0..acap {
+                    let adj = unsafe { adj_ptr.add(j * 0x30) };
+                    if unsafe { *adj.add(0x10) } == 4 {
+                        continue;
+                    }
+                    let nb_id = unsafe { *(adj.add(0x08) as *const i32) };
+                    if nb_id <= 0 {
+                        continue;
+                    }
+                    let nb_p = unsafe { get_prov(gs, nb_id) };
+                    if nb_p.is_null() {
+                        continue;
+                    }
+                    let nb_sp = unsafe { *(nb_p.add(OFF_PROV_STATIC_DATA) as *const *const u8) };
+                    if nb_sp.is_null() || (unsafe { *nb_sp.add(0xd2) } & 1) == 0 {
+                        continue;
+                    }
+                    let nb_cont = unsafe { nb_p.add(OFF_PROV_BLDG_CONTAINER) };
+                    let nb_ctrl = unsafe { get_ctrl(nb_cont) };
+                    if nb_ctrl.is_null() || unsafe { *nb_ctrl } != tag_id {
+                        continue;
+                    }
+                    if !unsafe { prov_borders_non_own_land(pie, gs, get_prov, nb_p, tag_id) }
+                        && unsafe { can_constr(nb_cont, supply_node, 0) } != 0
+                    {
+                        cands[n_cands] = nb_p;
+                        n_cands += 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    cands[n_cands] = worst_prov;
+    n_cands += 1;
+
+    let mut chosen = std::ptr::null::<u8>();
+    for ci in 0..n_cands {
+        let cand = cands[ci];
+        let cont = unsafe { cand.add(OFF_PROV_BLDG_CONTAINER) };
+        if unsafe { can_constr(cont, supply_node, 0) } == 0 {
+            continue;
+        }
+        if unsafe { has_hub_or_port_within_3_hops(pie, gs, get_prov, cand, supply_node, naval_base) }
+        {
+            continue;
+        }
+        chosen = cand;
+        break;
+    }
+    if chosen.is_null() {
+        return;
+    }
+
+    // Claim 30-day cooldown atomically before emitting the native construction command
+    if cd_slot
+        .compare_exchange(last_hr, cur_hours.max(1), Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    // Emit native MP-sync-safe CAddConstructionCommand via HOI4's own operator new + CSession::Post
+    let cont = unsafe { chosen.add(OFF_PROV_BLDG_CONTAINER) };
+    let loc_ctor: SBldgLocCtorFn = unsafe { std::mem::transmute(pie + OFF_SBLDG_LOC_CTOR) };
+    let op_new: OpNewFn = unsafe { std::mem::transmute(pie + OFF_OP_NEW_PLT) };
+    let cmd_ctor: AddConstrCmdCtorFn = unsafe { std::mem::transmute(pie + OFF_ADD_CONSTR_CMD_CTOR) };
+    let post_cmd: SessionPostFn = unsafe { std::mem::transmute(pie + OFF_SESSION_POST) };
+
+    let mut loc_buf = [0u64; 4];
+    unsafe { loc_ctor(&mut loc_buf, cont, supply_node) };
+    let cmd = unsafe { op_new(ADD_CONSTR_CMD_SIZE) };
+    if cmd.is_null() {
+        return;
+    }
+    unsafe { cmd_ctor(cmd, 1, tag_ptr, &loc_buf, 1) };
+    unsafe { post_cmd(cmd, tag_ptr) };
+
+    let total_queued = AI_SUPPLY_HUBS_QUEUED.fetch_add(1, Ordering::Relaxed) + 1;
+    if total_queued <= 16 {
+        let chosen_id = unsafe { *(chosen.add(OFF_PROV_ID) as *const i32) };
+        eprintln!(
+            "[hoi4-rust-accel] AI queued wartime supply_node #{} (tag_id={}, prov={}, starving_sector={}, fac={})",
+            total_queued, tag_id, chosen_id, best_score, total_fac
+        );
+    }
+}
+
+unsafe extern "C" fn hook_fix_supply_bottlenecks(ai_constr: *mut u8) {
+    let orig: FixSupplyBottlenecksFn =
+        unsafe { std::mem::transmute(ORIG_FIX_SUPPLY_BOTTLENECKS.load(Ordering::Relaxed)) };
+    unsafe { orig(ai_constr) };
+    if AI_SMART_SUPPLY_ENABLED.load(Ordering::Relaxed)
+        && AI_SMART_SUPPLY_APPLIED.load(Ordering::Acquire)
+    {
+        unsafe { try_queue_wartime_supply_hub(ai_constr) };
+    }
+}
+
 unsafe fn apply_ai_smart_supply_once(pie: usize) {
     if AI_SMART_SUPPLY_APPLIED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -1513,6 +2108,7 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
     {
         return;
     }
+    unsafe { resolve_supply_buildings_once(pie) };
     unsafe {
         let freq_ptr = (pie + OFF_NDEF_SUPPLY_FREQ_HRS) as *mut i32;
         let sat_ptr = (pie + OFF_NDEF_SUPPLY_SAT_THR) as *mut i64;
@@ -1559,7 +2155,7 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
                 *crisis_ptr = 25_000; // React to low-supply fronts at 25% supply instead of 10%
             }
             eprintln!(
-                "[hoi4-rust-accel] AI Smart Supply active: freq={}h->{}h, sat={:.2}->{:.2}, mot_ratio={:.2}->{:.2}, hub_prio={:.2}->{:.2}, rail_prio={:.2}->{:.2}, bfs_depth={:.0}->{:.0}",
+                "[hoi4-rust-accel] AI Smart Supply v2 active: freq={}h->{}h, sat={:.2}->{:.2}, mot_ratio={:.2}->{:.2}, hub_prio={:.2}->{:.2}, rail_prio={:.2}->{:.2}, bfs_depth={:.0}->{:.0}, supply_node_ptr={:#x}",
                 old_freq,
                 *freq_ptr,
                 old_sat as f64 / 100_000.0,
@@ -1572,6 +2168,7 @@ unsafe fn apply_ai_smart_supply_once(pie: usize) {
                 *prio_rail_ptr as f64 / 100_000.0,
                 old_depth as f64 / 100_000.0,
                 *depth_ptr as f64 / 100_000.0,
+                SUPPLY_NODE_BLDG_PTR.load(Ordering::Relaxed),
             );
         }
     }
@@ -1692,7 +2289,7 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     let mut changed = 0usize;
     // 1. Stop suicidal attacks into defended stacks & abort losing meatgrinders in 12h (never blocks empty tiles!)
     changed += raise_fp64(OFF_NDEF_ATK_HEAVY_DEF_LIM, 95_000);   // 0.50 -> 0.95 (refuse bad odds vs fortified/entrenched tiles; empty tile def=0!)
-    changed += raise_fp64(OFF_NDEF_PLAN_VAL_EXECUTE, -10_000);   // -0.50 -> -0.10 (stop launching hopeless front-wide suicide plans)
+    changed += raise_fp64(OFF_NDEF_PLAN_VAL_EXECUTE, -15_000);   // -0.50 -> -0.15 (stop launching hopeless front-wide suicide plans)
     changed += lower_fp64(OFF_NDEF_LOC_BAL_ADVANCE, 0);          // >0   -> 0.00 (Sheep AI: step into empty/weak tiles without hesitation)
     changed += raise_fp64(OFF_NDEF_STR_UNIT_WEAK, 50_000);       // 0.30 -> 0.50 (mark under-equipped divisions weak before they melt)
     changed += raise_fp64(OFF_NDEF_ORG_UNIT_WEAK, 35_000);       // 0.25 -> 0.35
@@ -1701,12 +2298,12 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     changed += lower_i32(OFF_NDEF_CANCEL_MIN_DUR_HR, 12);        // 48h  -> 12h  (save guns instead of grinding 2 days into forts)
     changed += raise_fp64(OFF_NDEF_DESP_WEAK_STR_LIM, 65_000);   // 0.35 -> 0.65
 
-    // 2. Equipment Stockpile Discipline (prevent deep negative rifle/equipment death spiral)
-    changed += raise_fp64(OFF_NDEF_MIN_FIELD_STR_BLD, 88_000);   // 0.70 -> 0.88 (pause new division spam until field army >= 88% equipped)
+    // 2. Equipment Stockpile Discipline (prevent deep negative rifle/equipment death spiral without starving tank factories!)
+    changed += raise_fp64(OFF_NDEF_MIN_FIELD_STR_BLD, 78_000);   // 0.70 -> 0.78 (v1.3: softened from 0.88 so mid-war tank training continues)
     changed += raise_fp64(OFF_NDEF_START_TRAIN_EQ, 85_000);      // 0.40 -> 0.85
     changed += raise_fp64(OFF_NDEF_STOP_TRAIN_EQ, 75_000);       // 0.25 -> 0.75 (stop exercising & burning equipment when stockpile < 75%)
     changed += raise_fp64(OFF_NDEF_DEPLOY_MIN_EQ_WAR, 90_000);   // 0.85 -> 0.90 (avoid deploying half-equipped divisions into combat)
-    changed += raise_fp64(OFF_NDEF_PROD_EQ_SURPLUS, 100_000);    // 0.80 -> 1.00 (maintain full equipment reserve buffer)
+    changed += lower_fp64(OFF_NDEF_PROD_EQ_SURPLUS, 55_000);     // 0.80 -> 0.55 (v1.3: stop hoarding 100% surplus rifles, freeing mils for armor!)
 
     // 3. Smarter front assessment & terrain discipline (gentle entrenchment weight so divisions stay fluid)
     changed += raise_fp64(OFF_NDEF_FRONT_EVAL_ACC, 150_000);     // 1.00 -> 1.50 (Sheep AI)
@@ -1715,20 +2312,20 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     changed += raise_fp64(OFF_NDEF_TERRAIN_IMPORT, 1_000_000);   // >= 10.0
     changed += lower_fp64(OFF_NDEF_TANKS_MOUNTAINS, -1_500_000); // <= -15.0 (Sheep AI: keep tanks out of mountains)
     changed += lower_fp64(OFF_NDEF_TANKS_JUNGLE, -2_000_000);    // <= -20.0 (Sheep AI: keep tanks out of jungles)
-    changed += raise_fp64(OFF_NDEF_ENTRENCH_WEIGHT, 220_000);    // 2.0  -> 2.2  (v1.2: lowered from 4.0 to stop gluing divisions in place)
+    changed += raise_fp64(OFF_NDEF_ENTRENCH_WEIGHT, 220_000);    // 2.0  -> 2.2  (v1.2+: lowered from 4.0 to stop gluing divisions in place)
 
-    // 4. Daily pocket/bulge detection & weak-point micro-attacks
+    // 4. Daily pocket/bulge detection & UNBLOCKED empty-tile micro capture
     changed += lower_i32(OFF_NDEF_ENCIRCLE_DISC_HRS, 24);        // 72h  -> 24h (daily encirclement discovery)
     changed += raise_fp64(OFF_NDEF_BULGE_LOW_CUTOFF, 120_000);   // 0.95 -> 1.20 (Sheep AI)
     changed += raise_fp64(OFF_NDEF_BULGE_HIGH_CUTOFF, 180_000);  // 1.50 -> 1.80 (Sheep AI)
     changed += lower_i32(OFF_NDEF_CUTOFF_EDGE_PROX, 1);          // 2    -> 1    (Sheep AI)
-    changed += raise_i32(OFF_NDEF_MAX_MICRO_ATKS, 5);            // 3    -> 5    (Sheep AI: opportunistic weak-point probes)
-    changed += lower_fp64(OFF_NDEF_MICRO_INACT_VAL, 15_000);     // 0.25 -> 0.15 (Sheep AI)
+    changed += raise_i32(OFF_NDEF_MAX_MICRO_ATKS, 10);           // 3    -> 10   (v1.3: grab all open gaps along inactive/active fronts)
+    changed += lower_fp64(OFF_NDEF_MICRO_INACT_VAL, -100_000);   // 0.25 -> -1.00 (v1.3: kills dead-zone against PLAN_VALUE_TO_EXECUTE; occupied tiles still require superiority!)
 
     // 5. Armored/Shock Force Concentration (AIFC — Sheep AI / Discord AI spearheads)
     changed += lower_i32(OFF_NDEF_AIFC_UPD_DAYS, 4);             // 5d   -> 4d
     changed += raise_fp64(OFF_NDEF_AIFC_UNIT_RATIO, 22_000);     // 0.15 -> 0.22 (22% shock spearhead allocation)
-    changed += raise_fp64(OFF_NDEF_AIFC_ACTIVATE_ORG, 30_000);   // 0.20 -> 0.30 (v1.2: balanced from 0.42 so spearheads actually roll)
+    changed += raise_fp64(OFF_NDEF_AIFC_ACTIVATE_ORG, 30_000);   // 0.20 -> 0.30 (v1.2+: balanced from 0.42 so spearheads actually roll)
     changed += lower_i32(OFF_NDEF_AIFC_NUDGE_DAYS, 10);          // 15d  -> 10d
     changed += raise_fp64(OFF_NDEF_AIFC_HARDNESS, 80_000_000);   // 300  -> 800  (Sheep AI: pack armor/mech into spearheads)
     changed += raise_fp64(OFF_NDEF_AIFC_ARMOR, 8_000_000);       // 30   -> 80   (Sheep AI)
@@ -1741,9 +2338,187 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     changed += raise_fp64(OFF_NDEF_AIFC_COST_MTN, 400_000);      // 3.0  -> 4.0  (Sheep AI: route spearheads around mountains)
 
     eprintln!(
-        "[hoi4-rust-accel] AI Tactical Prudence v2 & Equipment Conservation active ({}/40 non-cheating NAI defines tuned; empty-tile advances unblocked)",
-        changed
+        "[hoi4-rust-accel] AI Tactical Prudence v3 active ({}/40 NAI defines tuned; empty_tile_patch={}, inactive_micro=-1.00)",
+        changed,
+        EMPTY_TILE_FIX_APPLIED.load(Ordering::Relaxed)
     );
+}
+
+// ============================================================================
+// v1.3 Module 16: Smart Armored & Mechanized AI (Zero Cheats, Industrial-Scaled)
+// 1. Tunes 9 NDefines::NAI tank template/upgrade/XP weights so AI actually designs,
+//    upgrades, and deploys modern armor instead of spamming 1945 pure infantry.
+// 2. Hooks CAIStrategyStore::GetStrategyValue (vtable 0x434ea90+0x28) to scale
+//    `role_ratio` (0x10) & `template_prio` (0x15) dynamically by military factory
+//    count (>= 22 mils) and calendar year (>= 1938), mod-safely via CToken::FromString.
+// ============================================================================
+unsafe fn resolve_token_lin(pie: usize, name: &[u8]) -> i32 {
+    let from_str: CTokenFromStringFn = unsafe { std::mem::transmute(pie + OFF_CTOKEN_FROM_STRING) };
+    let sv = LinStrView {
+        len: name.len() as u64,
+        ptr: name.as_ptr(),
+    };
+    unsafe { from_str(&sv) }
+}
+
+unsafe fn apply_ai_smart_armor_once(pie: usize) {
+    if AI_SMART_ARMOR_DEFINES_APPLIED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    // Resolve mod-safe CToken IDs once on the main thread
+    let t_arm = unsafe { resolve_token_lin(pie, b"armor") };
+    let t_mech = unsafe { resolve_token_lin(pie, b"mechanized") };
+    let t_inf = unsafe { resolve_token_lin(pie, b"infantry") };
+    if t_arm > 0 {
+        TOK_ARMOR.store(t_arm, Ordering::Release);
+    }
+    if t_mech > 0 {
+        TOK_MECHANIZED.store(t_mech, Ordering::Release);
+    }
+    if t_inf > 0 {
+        TOK_INFANTRY.store(t_inf, Ordering::Release);
+    }
+
+    let mut changed = 0usize;
+    let raise_fp64 = |off: usize, target: i64| -> usize {
+        let p = (pie + off) as *mut i64;
+        if unsafe { *p } > 0 && unsafe { *p } < target {
+            unsafe { *p = target };
+            1
+        } else {
+            0
+        }
+    };
+    let raise_i32 = |off: usize, target: i32| -> usize {
+        let p = (pie + off) as *mut i32;
+        if unsafe { *p } > 0 && unsafe { *p } < target {
+            unsafe { *p = target };
+            1
+        } else {
+            0
+        }
+    };
+    let lower_i32 = |off: usize, target: i32| -> usize {
+        let p = (pie + off) as *mut i32;
+        if unsafe { *p } > target {
+            unsafe { *p = target };
+            1
+        } else {
+            0
+        }
+    };
+
+    changed += raise_i32(OFF_NDEF_UPG_DEFICIT_DAYS, 210);        // 60 -> 210 (allow upgrading divisions to med/heavy/modern tanks!)
+    changed += raise_fp64(OFF_NDEF_UPG_PCT_FORCES, 35_000);      // 0.20 -> 0.35
+    changed += lower_i32(OFF_NDEF_UPG_DIV_RELUCT, 4);            // 7 -> 4
+    changed += lower_i32(OFF_NDEF_VAR_XP_MOD_LAND, 20);          // 35 -> 20 (NSB tank designer XP threshold)
+    changed += lower_i32(OFF_NDEF_VAR_XP_LEG_LAND, 20);          // 35 -> 20
+    changed += lower_i32(OFF_NDEF_VAR_XP_RES_LAND, 30);          // 50 -> 30
+    changed += raise_fp64(OFF_NDEF_XP_UPG_LAND_EQ, 200_000);     // 1.00 -> 2.00
+    changed += raise_fp64(OFF_NDEF_XP_UPD_LAND_TMPL, 250_000);   // 2.00 -> 2.50
+    changed += raise_fp64(OFF_NDEF_ASSIGN_TANKS_WAR, 1_000_000); // 6.00 -> 10.00
+
+    eprintln!(
+        "[hoi4-rust-accel] AI Smart Armor active: {}/9 tank/upgrade defines tuned | tokens(armor={}, mech={}, inf={})",
+        changed, t_arm, t_mech, t_inf
+    );
+}
+
+unsafe extern "C" fn hook_get_strategy_value(
+    store: *const u8,
+    stype: i32,
+    id: i32,
+    target: i32,
+) -> i32 {
+    let orig: GetStrategyValueFn =
+        unsafe { std::mem::transmute(ORIG_GET_STRATEGY_VALUE.load(Ordering::Relaxed)) };
+    let val = unsafe { orig(store, stype, id, target) };
+
+    // Ultra-fast exit for all non-role_ratio / non-template_prio / targeted queries
+    if (stype != 0x10 && stype != 0x15) || target != 0 || store.is_null() {
+        return val;
+    }
+    let t_arm = TOK_ARMOR.load(Ordering::Acquire);
+    let t_mech = TOK_MECHANIZED.load(Ordering::Acquire);
+    let t_inf = TOK_INFANTRY.load(Ordering::Acquire);
+    if id != t_arm && id != t_mech && id != t_inf {
+        return val;
+    }
+
+    let pie = PIE_BASE.load(Ordering::Relaxed);
+    if pie == 0 {
+        return val;
+    }
+    // Verify store is embedded inside CCountryAI (+0x68) before casting
+    let ai_ptr = unsafe { store.sub(0x68) as *mut u8 };
+    if unsafe { *(ai_ptr as *const usize) } != pie + OFF_COUNTRY_AI_VT {
+        return val;
+    }
+
+    let gs = unsafe { *((pie + OFF_GAMESTATE_PTR) as *const *const u8) };
+    if gs.is_null() {
+        return val;
+    }
+    let raw_date = unsafe { *(gs.add(OFF_GS_CDATE_HOURS) as *const i32) };
+    let year = raw_date.wrapping_sub(0x029c55c0) / 8760;
+    if year < 1938 {
+        return val;
+    }
+
+    let country = unsafe { get_country_from_ai(ai_ptr) };
+    if country.is_null() {
+        return val;
+    }
+    let has_human: CountryHasHumanFn = unsafe { std::mem::transmute(pie + OFF_COUNTRY_HAS_HUMAN) };
+    if unsafe { has_human(country) } != 0 {
+        return val;
+    }
+    let constr = unsafe { *(country.add(OFF_COUNTRY_CONSTR_PTR) as *const *const u8) };
+    if constr.is_null() {
+        return val;
+    }
+    let total_fac = unsafe { *(constr.add(0x2d0) as *const i64) } / 100_000;
+    let civ_fac = unsafe { *(constr.add(0x310) as *const i32) } as i64;
+    let dock_fac = unsafe { *(constr.add(0x318) as *const i32) } as i64;
+    let mil = total_fac - civ_fac - dock_fac;
+    if mil < 22 {
+        return val;
+    }
+
+    let mut delta: i32 = 0;
+    if stype == 0x10 {
+        // role_ratio
+        if id == t_arm && val > -40 {
+            delta = if mil >= 55 && year >= 1940 {
+                30
+            } else if mil >= 35 && year >= 1939 {
+                22
+            } else {
+                14
+            };
+        } else if id == t_mech && mil >= 50 && year >= 1941 && val > -40 {
+            delta = 12;
+        } else if id == t_inf && mil >= 40 && year >= 1940 && val > 55 {
+            delta = -15;
+        }
+    } else if stype == 0x15 {
+        // template_prio
+        if id == t_arm && val > -40 {
+            delta = 40;
+        } else if id == t_mech && mil >= 50 && year >= 1941 && val > -40 {
+            delta = 25;
+        }
+    }
+
+    if delta != 0 {
+        AI_ARMOR_STRATEGY_BOOSTS.fetch_add(1, Ordering::Relaxed);
+        val.saturating_add(delta)
+    } else {
+        val
+    }
 }
 
 // ============================================================================
@@ -2928,7 +3703,7 @@ fn emit_report(measured_hours: u64) {
     zones.sort_by(|a, b| b.2.cmp(&a.2));
 
     let mut out = String::new();
-    out.push_str("\n================ HOI4 RUST ACCEL v1.2 REPORT ================\n");
+    out.push_str("\n================ HOI4 RUST ACCEL v1.3 REPORT ================\n");
     out.push_str(&format!(
         "Measured Hours : {} ({:.2} game days)\n",
         measured_hours,
@@ -2947,7 +3722,7 @@ fn emit_report(measured_hours: u64) {
     let tf_fps = if tf_ns > 0 { 1_000_000_000 / tf_ns } else { 0 };
     let sf_fps = SMOOTH_FPS.load(Ordering::Relaxed);
     out.push_str(&format!(
-        "Config         : target_fps={} smooth_fps={} fast_alloc={} fast_mod={} country_grain={} civil_war_fix={} ai_smart_supply={} ai_smart_airbase={} ai_tactical_prudence={} ai_smart_peace={} ai_throttle_minors={} fast_sched={} fast_wait={} fast_yield={} fast_event={} no_job_clock={} affinity={} quiet_log={} fast_save={} no_telemetry={}\n",
+        "Config         : target_fps={} smooth_fps={} fast_alloc={} fast_mod={} country_grain={} civil_war_fix={} ai_smart_supply={} ai_smart_airbase={} ai_tactical_prudence={} ai_smart_armor={} ai_smart_peace={} ai_throttle_minors={} fast_sched={} fast_wait={} fast_yield={} fast_event={} no_job_clock={} affinity={} quiet_log={} fast_save={} no_telemetry={}\n",
         tf_fps,
         sf_fps,
         FAST_ALLOC_ENABLED.load(Ordering::Relaxed),
@@ -2957,6 +3732,7 @@ fn emit_report(measured_hours: u64) {
         AI_SMART_SUPPLY_ENABLED.load(Ordering::Relaxed),
         AI_SMART_AIRBASE_ENABLED.load(Ordering::Relaxed),
         AI_TACTICAL_PRUDENCE_ENABLED.load(Ordering::Relaxed),
+        AI_SMART_ARMOR_ENABLED.load(Ordering::Relaxed),
         AI_SMART_PEACE_ENABLED.load(Ordering::Relaxed),
         AI_THROTTLE_MINORS_ENABLED.load(Ordering::Relaxed),
         FAST_SCHED_ENABLED.load(Ordering::Relaxed),
@@ -3060,6 +3836,12 @@ fn emit_report(measured_hours: u64) {
             CW_REBUILDS_COALESCED.load(Ordering::Relaxed)
         ));
     }
+    if AI_SMART_SUPPLY_ENABLED.load(Ordering::Relaxed) {
+        out.push_str(&format!(
+            "SmartSupply    : {} wartime land supply_node hubs auto-queued (max 1 active/country, 3-hop BFS)\n",
+            AI_SUPPLY_HUBS_QUEUED.load(Ordering::Relaxed)
+        ));
+    }
     if AI_SMART_AIRBASE_ENABLED.load(Ordering::Relaxed) {
         out.push_str(&format!(
             "SmartAirbase   : {} queued air_base priority evaluations boosted (3.2x)\n",
@@ -3068,8 +3850,16 @@ fn emit_report(measured_hours: u64) {
     }
     if AI_TACTICAL_PRUDENCE_ENABLED.load(Ordering::Relaxed) {
         out.push_str(&format!(
-            "TacticalAI     : Sheep-AI v2 prudence & equipment conservation active (applied={})\n",
-            AI_TACTICAL_PRUDENCE_APPLIED.load(Ordering::Relaxed)
+            "TacticalAI     : Sheep-AI v3 prudence & total empty-tile fix active (applied={}, empty_tile_patch={})\n",
+            AI_TACTICAL_PRUDENCE_APPLIED.load(Ordering::Relaxed),
+            EMPTY_TILE_FIX_APPLIED.load(Ordering::Relaxed)
+        ));
+    }
+    if AI_SMART_ARMOR_ENABLED.load(Ordering::Relaxed) {
+        out.push_str(&format!(
+            "SmartArmor     : {} industrial-scaled armor/mech strategy queries adjusted (defines_applied={})\n",
+            AI_ARMOR_STRATEGY_BOOSTS.load(Ordering::Relaxed),
+            AI_SMART_ARMOR_DEFINES_APPLIED.load(Ordering::Relaxed)
         ));
     }
     if AI_SMART_PEACE_ENABLED.load(Ordering::Relaxed) {
@@ -3430,7 +4220,7 @@ unsafe extern "C" fn hoi4_accel_init() {
         });
 
     eprintln!(
-        "[hoi4-rust-accel v1.2] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
+        "[hoi4-rust-accel v1.3] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
         std::process::id(),
         base,
         preset
@@ -3450,6 +4240,18 @@ unsafe extern "C" fn hoi4_accel_init() {
     let want_ai_smart_supply = !noop_mode && cfg_bool("HOI4_ACCEL_AI_SMART_SUPPLY", "ai_smart_supply", def_core);
     if want_ai_smart_supply {
         AI_SMART_SUPPLY_ENABLED.store(true, Ordering::Release);
+        if let Some(tramp_sb) = unsafe {
+            install_trampoline_hook(
+                base + OFF_FIX_SUPPLY_BOTTLENECKS,
+                &SIG_FIX_SUPPLY_BOTTLENECKS,
+                hook_fix_supply_bottlenecks as *const () as usize,
+            )
+        } {
+            ORIG_FIX_SUPPLY_BOTTLENECKS.store(tramp_sb, Ordering::Release);
+            eprintln!(
+                "[hoi4-rust-accel] Enabled AiSmartSupply v2 wartime land supply_node builder (FixSupplyBottlenecks @ 0x742d40)"
+            );
+        }
     }
     let mut want_ai_smart_airbase =
         !noop_mode && cfg_bool("HOI4_ACCEL_AI_SMART_AIRBASE", "ai_smart_airbase", def_core);
@@ -3478,6 +4280,37 @@ unsafe extern "C" fn hoi4_accel_init() {
         );
     if want_ai_tactical_prudence {
         AI_TACTICAL_PRUDENCE_ENABLED.store(true, Ordering::Release);
+        unsafe {
+            if verify_sig(base + OFF_EMPTY_TILE_SIG, &SIG_EMPTY_TILE_BRANCH)
+                && patch_bytes(base + OFF_EMPTY_TILE_PATCH, &[0x90, 0x90])
+            {
+                EMPTY_TILE_FIX_APPLIED.store(true, Ordering::Release);
+                eprintln!(
+                    "[hoi4-rust-accel] Enabled Empty-Tile Stall Fix (CUnitOrder @ 0x2569860 -> NOP; CanMoveIntoProvince intact)"
+                );
+            }
+        }
+    }
+    let mut want_ai_smart_armor =
+        !noop_mode && cfg_bool("HOI4_ACCEL_AI_SMART_ARMOR", "ai_smart_armor", def_core);
+    if want_ai_smart_armor {
+        unsafe {
+            let strat_slot = base + OFF_STRATEGY_STORE_VT + OFF_STRATEGY_GET_VAL_SLOT;
+            let cur_strat = *(strat_slot as *const usize);
+            if cur_strat == base + OFF_STRATEGY_GET_VAL_FN {
+                ORIG_GET_STRATEGY_VALUE.store(cur_strat, Ordering::Release);
+                if patch_rodata_ptr(strat_slot, hook_get_strategy_value as *const () as usize) {
+                    AI_SMART_ARMOR_ENABLED.store(true, Ordering::Release);
+                    eprintln!(
+                        "[hoi4-rust-accel] Enabled AiSmartArmor (CAIStrategyStore::GetStrategyValue vtable @ 0x434ea90+0x28)"
+                    );
+                } else {
+                    want_ai_smart_armor = false;
+                }
+            } else {
+                want_ai_smart_armor = false;
+            }
+        }
     }
     let mut want_ai_smart_peace =
         !noop_mode && cfg_bool("HOI4_ACCEL_AI_SMART_PEACE", "ai_smart_peace", def_core);
@@ -3530,6 +4363,7 @@ unsafe extern "C" fn hoi4_accel_init() {
         || want_ai_smart_supply
         || want_ai_smart_airbase
         || want_ai_tactical_prudence
+        || want_ai_smart_armor
         || want_ai_smart_peace;
     if need_session_hook {
         let frame_ns = if target_fps >= 1 && target_fps <= 240 {
