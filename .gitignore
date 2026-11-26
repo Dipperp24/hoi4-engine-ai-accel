@@ -1,0 +1,4 @@
+/target/
+*.o
+*.tmp
+hoi4_accel.log

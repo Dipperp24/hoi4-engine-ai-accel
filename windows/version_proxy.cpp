@@ -1,0 +1,2624 @@
+// ============================================================================
+// hoi4-accel v1.0-win64: Non-Destructive Windows x86_64 Engine & AI Accelerator
+// Target: Hearts of Iron IV v1.20.0.0.8873 (Operation Postern, PE32+ x86-64)
+//
+// Drop `version.dll` (and optional `hoi4_accel.ini`) next to `hoi4.exe`.
+// Zero game files on disk are modified; non-HoI4 processes (such as dowser.exe
+// or crashreporter.exe) strictly pass through untouched to System32\version.dll.
+// ============================================================================
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <windows.h>
+#include <intrin.h>
+
+#include <atomic>
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cwchar>
+
+// ============================================================================
+// 1. Transparent System32\version.dll Export Forwarding (All 19 Win32 Exports)
+// ============================================================================
+extern "C" {
+FARPROC g_ver_procs[19] = {nullptr};
+}
+
+static HMODULE g_real_version_dll = nullptr;
+
+static const char* const kVersionExportNames[19] = {
+    "GetFileVersionInfoA",
+    "GetFileVersionInfoByHandle",
+    "GetFileVersionInfoExA",
+    "GetFileVersionInfoExW",
+    "GetFileVersionInfoSizeA",
+    "GetFileVersionInfoSizeExA",
+    "GetFileVersionInfoSizeExW",
+    "GetFileVersionInfoSizeW",
+    "GetFileVersionInfoW",
+    "VerFindFileA",
+    "VerFindFileW",
+    "VerInstallFileA",
+    "VerInstallFileW",
+    "VerLanguageNameA",
+    "VerLanguageNameW",
+    "VerQueryValueA",
+    "VerQueryValueIndexA",
+    "VerQueryValueIndexW",
+    "VerQueryValueW",
+};
+
+#define DEFINE_VERSION_THUNK(idx, name)                               \
+    __asm__(                                                          \
+        ".text\n\t"                                                   \
+        ".p2align 4\n\t"                                              \
+        ".globl proxy_" #name "\n"                                    \
+        "proxy_" #name ":\n\t"                                        \
+        "movq g_ver_procs+" #idx "*8(%rip), %rax\n\t"                 \
+        "testq %rax, %rax\n\t"                                        \
+        "jz 1f\n\t"                                                   \
+        "jmp *%rax\n"                                                 \
+        "1:\n\t"                                                      \
+        "xorl %eax, %eax\n\t"                                         \
+        "ret\n");
+
+DEFINE_VERSION_THUNK(0, GetFileVersionInfoA)
+DEFINE_VERSION_THUNK(1, GetFileVersionInfoByHandle)
+DEFINE_VERSION_THUNK(2, GetFileVersionInfoExA)
+DEFINE_VERSION_THUNK(3, GetFileVersionInfoExW)
+DEFINE_VERSION_THUNK(4, GetFileVersionInfoSizeA)
+DEFINE_VERSION_THUNK(5, GetFileVersionInfoSizeExA)
+DEFINE_VERSION_THUNK(6, GetFileVersionInfoSizeExW)
+DEFINE_VERSION_THUNK(7, GetFileVersionInfoSizeW)
+DEFINE_VERSION_THUNK(8, GetFileVersionInfoW)
+DEFINE_VERSION_THUNK(9, VerFindFileA)
+DEFINE_VERSION_THUNK(10, VerFindFileW)
+DEFINE_VERSION_THUNK(11, VerInstallFileA)
+DEFINE_VERSION_THUNK(12, VerInstallFileW)
+DEFINE_VERSION_THUNK(13, VerLanguageNameA)
+DEFINE_VERSION_THUNK(14, VerLanguageNameW)
+DEFINE_VERSION_THUNK(15, VerQueryValueA)
+DEFINE_VERSION_THUNK(16, VerQueryValueIndexA)
+DEFINE_VERSION_THUNK(17, VerQueryValueIndexW)
+DEFINE_VERSION_THUNK(18, VerQueryValueW)
+
+static bool load_system_version_dll() {
+    if (g_real_version_dll != nullptr) {
+        return true;
+    }
+    wchar_t sys_dir[MAX_PATH + 32] = {0};
+    UINT len = GetSystemDirectoryW(sys_dir, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return false;
+    }
+    wcscat_s(sys_dir, L"\\version.dll");
+    g_real_version_dll = LoadLibraryW(sys_dir);
+    if (!g_real_version_dll) {
+        return false;
+    }
+    for (int i = 0; i < 19; ++i) {
+        g_ver_procs[i] = GetProcAddress(g_real_version_dll, kVersionExportNames[i]);
+    }
+    return true;
+}
+
+// ============================================================================
+// 2. Machine-Verified RVAs & Signatures for hoi4.exe v1.20.0.0.8873
+// ============================================================================
+static constexpr uintptr_t RVA_GAMESTATE_TICK_CLOCK   = 0x01f3670;
+static constexpr uintptr_t RVA_SHOULD_RENDER_MIDTICK  = 0x02bacd0;
+static constexpr uintptr_t RVA_SESSION_UPDATE         = 0x0f88c10;
+static constexpr uintptr_t RVA_UPDATE_ONE_FRAME       = 0x2297b50;
+static constexpr uintptr_t RVA_TIMER_GET_SEC          = 0x22c47a0;
+
+static constexpr uintptr_t RVA_SET_LOGGER             = 0x2550050;
+static constexpr uintptr_t RVA_SCOPED_TIMER_CTOR      = 0x25554d0;
+static constexpr uintptr_t RVA_SCOPED_TIMER_DTOR      = 0x2555c20;
+static constexpr uintptr_t RVA_WORKER_THREAD_INIT     = 0x255a110;
+static constexpr uintptr_t RVA_TASK_WAIT              = 0x255afb0;
+static constexpr uintptr_t RVA_EVENT_WAIT_AUTO        = 0x255b230;
+static constexpr uintptr_t RVA_POOL_WAKE_ONE_OR_ALL   = 0x255b3e0;
+static constexpr uintptr_t RVA_EXEC_TASK_NOW1         = 0x255d0f3;
+static constexpr uintptr_t RVA_EXEC_TASK_NOW2         = 0x255d186;
+static constexpr uintptr_t RVA_EXEC_TASK_LOCKADD_END  = 0x255d1b3;
+static constexpr uintptr_t RVA_POP_TASK_OR_WAIT       = 0x255d2a0;
+static constexpr uintptr_t RVA_FILE_FLUSH             = 0x259d9e0;
+static constexpr uintptr_t RVA_SWITCH_TO_THREAD_THUNK = 0x25a6e48;
+static constexpr uintptr_t RVA_TELEMETRY_CALL         = 0x20e9aa6;
+
+static constexpr uintptr_t RVA_IAT_SWITCH_TO_THREAD   = 0x27892c0;
+static constexpr uintptr_t RVA_IAT_TELEM_PAYLOAD_DTOR = 0x2789a20;
+static constexpr uintptr_t RVA_IAT_QUEUE_TELEMETRY    = 0x2789a90;
+
+static constexpr uintptr_t RVA_STR_GAMESTATE_HOURLY   = 0x27a4860;
+static constexpr uintptr_t RVA_GAMESTATE_PTR          = 0x33e3b30;
+static constexpr uintptr_t RVA_G_LOGGER_PTR           = 0x3695af8;
+
+// v1.0: CPdxParallelForRange::Init & CModifier::GetValue (MSVC x64)
+static constexpr uintptr_t RVA_PARFOR_RANGE_INIT      = 0x2576ac0;
+static constexpr uintptr_t RVA_MODIFIER_GET_VAL       = 0x05a63d0;
+static constexpr uintptr_t RVA_G_MODIFIER_DEFS        = 0x33e3650;
+static constexpr uintptr_t RVA_G_FEATURE_FN           = 0x33e4a00;
+
+// v1.0: CPdxNewDeleteAllocator vtable & virtual methods
+static constexpr uintptr_t RVA_PDX_ALLOC_VT           = 0x2798570;
+static constexpr uintptr_t OFF_PDX_ALLOC_SLOT         = 0x08;
+static constexpr uintptr_t OFF_PDX_FREE_SLOT          = 0x10;
+static constexpr uintptr_t RVA_PDX_ALLOC_FN           = 0x011d5d0;
+static constexpr uintptr_t RVA_PDX_FREE_FN            = 0x011d5f0;
+
+// v1.0: Civil War Freeze Fix (CCivilWarSetup::Execute + CInGameIdler map/supply rebuild)
+static constexpr uintptr_t RVA_CW_SETUP_EXEC          = 0x1169250;
+static constexpr uintptr_t RVA_INGAME_IDLER_VT        = 0x29ea628;
+static constexpr uintptr_t OFF_IDLER_MAP_REBUILD_SLOT = 0x238;
+static constexpr uintptr_t RVA_IDLER_MAP_REBUILD_FN   = 0x0b8fa80;
+
+// v1.0: NDefines::NAI & NDefines::NAITheatre supply/railway construction globals (.data)
+static constexpr uintptr_t RVA_NDEF_SUPPLY_FREQ_HRS   = 0x33e6124; // int32_t hours (vanilla 168)
+static constexpr uintptr_t RVA_NDEF_SUPPLY_SAT_THR    = 0x33e61c8; // int64_t CFixedPoint64 x100,000 (vanilla 85,000)
+static constexpr uintptr_t RVA_NDEF_PRIO_SUPPLY_BLDG  = 0x33e6510; // int64_t CFixedPoint64 x100,000 (vanilla 110,000)
+static constexpr uintptr_t RVA_NDEF_PRIO_RAILWAY      = 0x33e65d8; // int64_t CFixedPoint64 x100,000 (vanilla 400,000)
+static constexpr uintptr_t RVA_NDEF_SUPPLY_MAX_DEPTH  = 0x33e79a8; // int64_t CFixedPoint64 x100,000 (vanilla 500,000)
+static constexpr uintptr_t RVA_NDEF_SUPPLY_CRISIS_LIM = 0x33e7a40; // int64_t CFixedPoint64 x100,000 (vanilla 10,000)
+
+// v1.0: Dormant Peaceful Minor AI Hourly Throttling (CCountryAI vtable & CCountry offsets)
+static constexpr uintptr_t RVA_COUNTRY_AI_VT          = 0x27b8c20;
+static constexpr uintptr_t OFF_COUNTRY_AI_PASS1_SLOT  = 0x10;
+static constexpr uintptr_t RVA_COUNTRY_AI_PASS1_FN    = 0x02c4ae0;
+static constexpr uintptr_t OFF_COUNTRY_AI_PASS2_SLOT  = 0x18;
+static constexpr uintptr_t RVA_COUNTRY_AI_PASS2_FN    = 0x02c4b50;
+static constexpr uintptr_t RVA_COUNTRY_HAS_HUMAN      = 0x0748ca0;
+static constexpr uintptr_t RVA_DIPLO_IS_AT_WAR        = 0x0da7bb0;
+static constexpr size_t    OFF_GS_CDATE_HOURS         = 0x468; // gs + 0x460 + 0x08
+static constexpr size_t    OFF_COUNTRY_TAG_ID         = 0x08;
+static constexpr size_t    OFF_COUNTRY_NUM_STATES     = 0x484;
+static constexpr size_t    OFF_COUNTRY_DIPLO_PTR      = 0xf88;
+static constexpr size_t    OFF_COUNTRY_IS_MAJOR       = 0x145a;
+
+// CGameState field offsets on Windows MSVC x64 (verified @ 0xf88d69 & 0x1f4031..0x1f404b)
+static constexpr size_t OFF_GS_NUM_PLAYERS = 0x104;
+static constexpr size_t OFF_GS_GAME_SPEED  = 0x4bc;
+static constexpr size_t OFF_GS_PAUSED      = 0x4c0;
+
+// CEvent stride on Windows MSVC x64 (verified @ 0x255b0d8 & 0x255d3c1: 5 * 32 = 0xa0)
+static constexpr intptr_t WIN_CEVENT_SIZE  = 0xa0;
+
+static constexpr uint8_t SIG_UPDATE_ONE_FRAME[16] = {
+    0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x56, 0x48,
+    0x83, 0xec, 0x70, 0x0f, 0x29, 0x74, 0x24, 0x60
+};
+static constexpr uint8_t SIG_SESSION_UPDATE[15] = {
+    0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49,
+    0x89, 0x6b, 0x18, 0x49, 0x89, 0x73, 0x20
+};
+static constexpr uint8_t SIG_TICK_CLOCK[16] = {
+    0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
+    0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac
+};
+static constexpr uint8_t SIG_SHOULD_RENDER_MIDTICK[16] = {
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83,
+    0xec, 0x30, 0x48, 0x8b, 0x01, 0x8b, 0xfa, 0x48
+};
+static constexpr uint8_t SIG_POP_TASK_OR_WAIT[17] = {
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74,
+    0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x41, 0x56
+};
+static constexpr uint8_t SIG_TASK_WAIT[16] = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b,
+    0x59, 0x18, 0x48, 0x85, 0xdb, 0x74, 0x72, 0x0f
+};
+static constexpr uint8_t SIG_WORKER_THREAD_INIT[16] = {
+    0x48, 0x83, 0xec, 0x28, 0x85, 0xc9, 0x74, 0x39,
+    0x83, 0xe9, 0x01, 0x74, 0x1e, 0x83, 0xf9, 0x01
+};
+static constexpr uint8_t SIG_SWITCH_TO_THREAD_THUNK[7] = {
+    0x48, 0xff, 0x25, 0x71, 0x24, 0x1e, 0x00
+};
+static constexpr uint8_t SIG_EXEC_TASK_NOW1[5] = {
+    0xe8, 0x08, 0x1c, 0xcb, 0xfd
+};
+static constexpr uint8_t SIG_EXEC_TASK_NOW2[12] = {
+    0xe8, 0x75, 0x1b, 0xcb, 0xfd, 0x48, 0x8b, 0x08,
+    0x48, 0x2b, 0x4c, 0x24
+};
+static constexpr uint8_t SIG_EXEC_TASK_LOCKADD_END[7] = {
+    0xf0, 0x48, 0x01, 0x10, 0x41, 0x88, 0x2f
+};
+static constexpr uint8_t SIG_SET_LOGGER[17] = {
+    0x4c, 0x8b, 0x05, 0xa1, 0x5a, 0x14, 0x01, 0x48,
+    0x89, 0x0d, 0x9a, 0x5a, 0x14, 0x01, 0x4d, 0x85, 0xc0
+};
+static constexpr uint8_t SIG_FILE_FLUSH[16] = {
+    0x48, 0x83, 0xec, 0x28, 0xff, 0x15, 0xa6, 0xbd,
+    0x1e, 0x00, 0x85, 0xc0, 0x75, 0x2c, 0xff, 0x15
+};
+static constexpr uint8_t SIG_TELEMETRY_CALL[6] = {
+    0xff, 0x15, 0xe4, 0xff, 0x69, 0x00
+};
+static constexpr uint8_t SIG_SCOPED_TIMER_CTOR[16] = {
+    0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83,
+    0xec, 0x30, 0x33, 0xc0, 0x48, 0xc7, 0x41, 0x10
+};
+static constexpr uint8_t SIG_SCOPED_TIMER_DTOR[16] = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x83,
+    0x79, 0x10, 0xff, 0x48, 0x8b, 0xd9, 0x0f, 0x84
+};
+static constexpr uint8_t SIG_PARFOR_RANGE_INIT[15] = {
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c,
+    0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18
+};
+static constexpr uint8_t SIG_MODIFIER_GET_VAL[15] = {
+    0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74,
+    0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20
+};
+static constexpr uint8_t SIG_CW_SETUP_EXEC[15] = {
+    0x48, 0x8b, 0xc4, 0x4c, 0x89, 0x40, 0x18, 0x48,
+    0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08
+};
+
+// ============================================================================
+// 3. Timing, State & Profiler Tables
+// ============================================================================
+static uintptr_t g_exe_base = 0;
+static DWORD g_main_tid = 0;
+static DWORD g_tls_yield_idx = TLS_OUT_OF_INDEXES;
+static DWORD g_tls_slab_idx = TLS_OUT_OF_INDEXES;
+static uint64_t g_qpc_freq = 10000000ULL;
+static wchar_t g_log_path[MAX_PATH] = {0};
+static wchar_t g_ini_path[MAX_PATH] = {0};
+
+static std::atomic<bool> g_active_for_hoi4{false};
+static std::atomic<bool> g_collect_zones{false};
+static std::atomic<bool> g_profile_started_sim{false};
+static std::atomic<bool> g_bench_recording{false};
+static std::atomic<bool> g_report_emitted{false};
+
+static std::atomic<uintptr_t> g_hourly_ptr{0};
+static std::atomic<uint64_t> g_total_hours{0};
+static std::atomic<uint64_t> g_bench_warmup_hours{24};
+static std::atomic<uint64_t> g_bench_max_hours{0};
+static std::atomic<uint64_t> g_bench_start_ns{0};
+static std::atomic<uint64_t> g_bench_start_cpu_ns{0};
+
+// Feature flags & live telemetry counters
+static std::atomic<bool> g_fast_sched_enabled{false};
+static std::atomic<bool> g_fast_wait_enabled{false};
+static std::atomic<bool> g_fast_yield_enabled{false};
+static std::atomic<bool> g_no_job_clock_enabled{false};
+static std::atomic<bool> g_affinity_enabled{false};
+static std::atomic<bool> g_quiet_log_enabled{false};
+static std::atomic<bool> g_fast_save_enabled{false};
+static std::atomic<bool> g_no_telemetry_enabled{false};
+static std::atomic<bool> g_country_grain_enabled{false};
+static std::atomic<bool> g_fast_mod_enabled{false};
+static std::atomic<bool> g_fast_alloc_enabled{false};
+static std::atomic<bool> g_civil_war_fix_enabled{false};
+static std::atomic<bool> g_ai_smart_supply_enabled{false};
+static std::atomic<bool> g_ai_smart_supply_applied{false};
+static std::atomic<bool> g_ai_throttle_minors_enabled{false};
+
+static std::atomic<uint64_t> g_sched_watcher_polls{0};
+static std::atomic<uint64_t> g_yield_elided{0};
+static std::atomic<uint64_t> g_fsync_skipped{0};
+static std::atomic<uint64_t> g_telemetry_blocked{0};
+static std::atomic<uint64_t> g_log_allowed{0};
+static std::atomic<uint64_t> g_log_suppressed{0};
+static std::atomic<uint64_t> g_parfor_rebalanced{0};
+static std::atomic<uint64_t> g_parfor_total{0};
+static std::atomic<uint64_t> g_slab_alloc_hits{0};
+static std::atomic<uint64_t> g_slab_free_hits{0};
+static std::atomic<uint64_t> g_slab_fallbacks{0};
+static std::atomic<uint64_t> g_cw_rebuilds_coalesced{0};
+static std::atomic<uint64_t> g_minor_ai_skipped{0};
+static std::atomic<uint64_t> g_minor_ai_executed{0};
+
+static std::atomic<uintptr_t> g_orig_parfor_range_init{0};
+static std::atomic<uintptr_t> g_orig_modifier_get_val{0};
+static std::atomic<uintptr_t> g_orig_pdx_alloc{0};
+static std::atomic<uintptr_t> g_orig_pdx_free{0};
+static std::atomic<uintptr_t> g_orig_cw_setup_exec{0};
+static std::atomic<uintptr_t> g_orig_idler_map_rebuild{0};
+static std::atomic<uintptr_t> g_orig_country_ai_pass1{0};
+static std::atomic<uintptr_t> g_orig_country_ai_pass2{0};
+static std::atomic<uint32_t>  g_in_civil_war_depth{0};
+static std::atomic<uintptr_t> g_deferred_cw_idler{0};
+static std::atomic<uint64_t>  g_minor_skip_bitmap[8];
+
+// Frame pacing & Speed-5 bursting state
+static std::atomic<uintptr_t> g_orig_update_one_frame{0};
+static std::atomic<uintptr_t> g_orig_session_update{0};
+static std::atomic<uintptr_t> g_orig_switch_to_thread{0};
+static std::atomic<uint64_t> g_target_frame_ns{0};
+static std::atomic<uint64_t> g_max_burst_ticks{16};
+static std::atomic<uint64_t> g_frames_rendered{0};
+static std::atomic<uint64_t> g_active_sim_frames{0};
+static std::atomic<uint64_t> g_active_sim_ns{0};
+static std::atomic<uint64_t> g_burst_extra_ticks{0};
+static std::atomic<uint64_t> g_prev_session_end_ns{0};
+static std::atomic<uint64_t> g_last_frame_start_ns{0};
+static std::atomic<uint64_t> g_ema_render_ns{8000000ULL};
+static std::atomic<uint64_t> g_ema_tick_ns{14000000ULL};
+static std::atomic<uint64_t> g_worst_frame_ns{0};
+static std::atomic<bool> g_in_burst{false};
+
+// Mid-tick RDTSC anti-freeze pacer
+static std::atomic<uint64_t> g_smooth_fps{0};
+static std::atomic<uint64_t> g_mid_tick_checks{0};
+static std::atomic<uint64_t> g_mid_tick_fast_skip{0};
+static std::atomic<uint64_t> g_mid_tick_renders{0};
+static std::atomic<uint64_t> g_last_mid_check_tsc{0};
+static std::atomic<uint64_t> g_tsc_per_ms{0};
+static std::atomic<uint64_t> g_tsc_cal_ns{0};
+static std::atomic<uint64_t> g_tsc_cal_tsc{0};
+
+// CPU Topology Pinning
+static uint32_t g_topo_worker_cpus[64] = {0};
+static size_t g_topo_worker_len = 0;
+static uint32_t g_topo_bg_cpus[64] = {0};
+static size_t g_topo_bg_len = 0;
+static std::atomic<size_t> g_worker_pin_counter{0};
+static std::atomic<size_t> g_bg_pin_counter{0};
+
+// Lock-free Zone Profiler table
+static constexpr size_t ZONE_CAP = 2048;
+struct ZoneSlot {
+    std::atomic<uintptr_t> name_ptr{0};
+    std::atomic<uint64_t> calls{0};
+    std::atomic<uint64_t> total_ns{0};
+    std::atomic<uint64_t> max_ns{0};
+    std::atomic<uint64_t> main_ns{0};
+    std::atomic<uint64_t> worker_ns{0};
+};
+static ZoneSlot g_zones[ZONE_CAP];
+
+// Lock-free Logger Deduplicator
+static constexpr size_t LOG_DEDUP_CAP = 2048;
+static constexpr size_t LOG_VT_CAP = 16;
+struct LogDedupSlot {
+    std::atomic<uint64_t> hash{0};
+    std::atomic<uint32_t> count{0};
+};
+static LogDedupSlot g_log_dedup[LOG_DEDUP_CAP];
+static std::atomic<uintptr_t> g_log_vt_keys[LOG_VT_CAP];
+static std::atomic<uintptr_t> g_log_vt_orig[LOG_VT_CAP];
+
+__forceinline uint64_t now_ns() {
+    LARGE_INTEGER li;
+    QueryPerformanceCounter(&li);
+    return static_cast<uint64_t>(
+        (static_cast<unsigned __int128>(static_cast<uint64_t>(li.QuadPart)) * 1000000000ULL) /
+        g_qpc_freq
+    );
+}
+
+static uint64_t now_cpu_ns() {
+    FILETIME ct{}, et{}, kt{}, ut{};
+    if (!GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut)) {
+        return 0;
+    }
+    uint64_t k = (static_cast<uint64_t>(kt.dwHighDateTime) << 32) | kt.dwLowDateTime;
+    uint64_t u = (static_cast<uint64_t>(ut.dwHighDateTime) << 32) | ut.dwLowDateTime;
+    return (k + u) * 100ULL;
+}
+
+__forceinline size_t hash_uintptr(uintptr_t p) {
+    uint64_t x = static_cast<uint64_t>(p) * 0x9e3779b97f4a7c15ULL;
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    return static_cast<size_t>(x ^ (x >> 27));
+}
+
+static void append_log_line(const char* text, bool truncate_first = false) {
+    if (g_log_path[0] == L'\0') {
+        return;
+    }
+    HANDLE h = CreateFileW(
+        g_log_path,
+        FILE_GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        truncate_first ? CREATE_ALWAYS : OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    if (h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    if (!truncate_first) {
+        SetFilePointer(h, 0, nullptr, FILE_END);
+    }
+    DWORD written = 0;
+    WriteFile(h, text, static_cast<DWORD>(std::strlen(text)), &written, nullptr);
+    CloseHandle(h);
+}
+
+static void reset_stats() {
+    for (size_t i = 0; i < ZONE_CAP; ++i) {
+        if (g_zones[i].name_ptr.load(std::memory_order_relaxed) != 0) {
+            g_zones[i].calls.store(0, std::memory_order_relaxed);
+            g_zones[i].total_ns.store(0, std::memory_order_relaxed);
+            g_zones[i].max_ns.store(0, std::memory_order_relaxed);
+            g_zones[i].main_ns.store(0, std::memory_order_relaxed);
+            g_zones[i].worker_ns.store(0, std::memory_order_relaxed);
+        }
+    }
+    g_sched_watcher_polls.store(0, std::memory_order_relaxed);
+    g_yield_elided.store(0, std::memory_order_relaxed);
+    g_frames_rendered.store(0, std::memory_order_relaxed);
+    g_active_sim_frames.store(0, std::memory_order_relaxed);
+    g_active_sim_ns.store(0, std::memory_order_relaxed);
+    g_burst_extra_ticks.store(0, std::memory_order_relaxed);
+    g_worst_frame_ns.store(0, std::memory_order_relaxed);
+    g_mid_tick_checks.store(0, std::memory_order_relaxed);
+    g_mid_tick_fast_skip.store(0, std::memory_order_relaxed);
+    g_mid_tick_renders.store(0, std::memory_order_relaxed);
+    g_parfor_rebalanced.store(0, std::memory_order_relaxed);
+    g_parfor_total.store(0, std::memory_order_relaxed);
+    g_slab_alloc_hits.store(0, std::memory_order_relaxed);
+    g_slab_free_hits.store(0, std::memory_order_relaxed);
+    g_slab_fallbacks.store(0, std::memory_order_relaxed);
+    g_cw_rebuilds_coalesced.store(0, std::memory_order_relaxed);
+    g_minor_ai_skipped.store(0, std::memory_order_relaxed);
+    g_minor_ai_executed.store(0, std::memory_order_relaxed);
+}
+
+static void emit_report(uint64_t measured_hours);
+static void apply_ai_smart_supply_once();
+
+// ============================================================================
+// 4. Safe Patching & Executable Trampoline Helpers (W^X + FlushInstructionCache)
+// ============================================================================
+static bool verify_sig(uintptr_t addr, const uint8_t* expected, size_t len) {
+    return std::memcmp(reinterpret_cast<const void*>(addr), expected, len) == 0;
+}
+
+static bool patch_bytes(uintptr_t addr, const uint8_t* bytes, size_t len) {
+    DWORD old_prot = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(addr), len, PAGE_EXECUTE_READWRITE, &old_prot)) {
+        return false;
+    }
+    std::memcpy(reinterpret_cast<void*>(addr), bytes, len);
+    DWORD dummy = 0;
+    VirtualProtect(reinterpret_cast<void*>(addr), len, old_prot, &dummy);
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<const void*>(addr), len);
+    return true;
+}
+
+static bool patch_data_ptr(uintptr_t addr, uintptr_t new_val) {
+    DWORD old_prot = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(addr), sizeof(uintptr_t), PAGE_READWRITE, &old_prot)) {
+        return false;
+    }
+    *reinterpret_cast<uintptr_t*>(addr) = new_val;
+    DWORD dummy = 0;
+    VirtualProtect(reinterpret_cast<void*>(addr), sizeof(uintptr_t), old_prot, &dummy);
+    return true;
+}
+
+static bool install_abs_jmp(uintptr_t addr, uintptr_t target) {
+    uint8_t patch[14];
+    patch[0] = 0xff;
+    patch[1] = 0x25;
+    std::memset(&patch[2], 0, 4);
+    std::memcpy(&patch[6], &target, 8);
+    return patch_bytes(addr, patch, sizeof(patch));
+}
+
+static uintptr_t install_trampoline_hook(
+    uintptr_t func_addr,
+    const uint8_t* expected_prologue,
+    size_t plen,
+    uintptr_t hook_target
+) {
+    if (plen < 14 || plen > 32 || !verify_sig(func_addr, expected_prologue, plen)) {
+        return 0;
+    }
+    auto* tramp = static_cast<uint8_t*>(
+        VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+    );
+    if (!tramp) {
+        return 0;
+    }
+    std::memcpy(tramp, expected_prologue, plen);
+    uint64_t ret_addr = static_cast<uint64_t>(func_addr + plen);
+    tramp[plen + 0] = 0xff;
+    tramp[plen + 1] = 0x25;
+    std::memset(&tramp[plen + 2], 0, 4);
+    std::memcpy(&tramp[plen + 6], &ret_addr, 8);
+
+    DWORD old_prot = 0;
+    if (!VirtualProtect(tramp, 4096, PAGE_EXECUTE_READ, &old_prot)) {
+        VirtualFree(tramp, 0, MEM_RELEASE);
+        return 0;
+    }
+    FlushInstructionCache(GetCurrentProcess(), tramp, plen + 14);
+
+    uint8_t patch[32];
+    std::memset(patch, 0x90, plen);
+    patch[0] = 0xff;
+    patch[1] = 0x25;
+    std::memset(&patch[2], 0, 4);
+    std::memcpy(&patch[6], &hook_target, 8);
+    if (!patch_bytes(func_addr, patch, plen)) {
+        VirtualFree(tramp, 0, MEM_RELEASE);
+        return 0;
+    }
+    return reinterpret_cast<uintptr_t>(tramp);
+}
+
+// ============================================================================
+// 5. Frame Pacing & Render-Aware Multi-Tick Speed-5 Bursting
+//    - UpdateOneFrame (0x2297b50): true rendered FPS & worst-frame tracker
+//    - SessionUpdate  (0x0f88c10): Speed-5 multi-tick bursting inside budget
+// ============================================================================
+using UpdateOneFrameFn = void (*)(uint8_t* idler, uint8_t allow_sim);
+using SessionUpdateFn  = void (*)(uint8_t* session);
+
+extern "C" void hook_update_one_frame(uint8_t* idler, uint8_t allow_sim) {
+    uintptr_t orig_ptr = g_orig_update_one_frame.load(std::memory_order_relaxed);
+    auto orig = reinterpret_cast<UpdateOneFrameFn>(orig_ptr);
+
+    uint64_t frame_start = now_ns();
+    bool is_unpaused_sim = false;
+    if (g_exe_base != 0) {
+        auto* gs = *reinterpret_cast<uint8_t* const*>(g_exe_base + RVA_GAMESTATE_PTR);
+        if (gs != nullptr) {
+            is_unpaused_sim = (gs[OFF_GS_PAUSED] == 0);
+            if (g_ai_smart_supply_enabled.load(std::memory_order_relaxed) &&
+                !g_ai_smart_supply_applied.load(std::memory_order_relaxed)) {
+                apply_ai_smart_supply_once();
+            }
+        }
+    }
+
+    uint64_t prev_start = g_last_frame_start_ns.exchange(frame_start, std::memory_order_relaxed);
+    if (prev_start > 0 && frame_start > prev_start) {
+        uint64_t fdt = frame_start - prev_start;
+        if (is_unpaused_sim && fdt < 2000000000ULL) {
+            g_active_sim_frames.fetch_add(1, std::memory_order_relaxed);
+            g_active_sim_ns.fetch_add(fdt, std::memory_order_relaxed);
+        }
+        if (fdt < 2000000000ULL) {
+            uint64_t cur_w = g_worst_frame_ns.load(std::memory_order_relaxed);
+            while (fdt > cur_w &&
+                   !g_worst_frame_ns.compare_exchange_weak(
+                       cur_w, fdt, std::memory_order_relaxed, std::memory_order_relaxed)) {
+            }
+        }
+    }
+
+    orig(idler, allow_sim);
+    g_frames_rendered.fetch_add(1, std::memory_order_relaxed);
+}
+
+extern "C" void hook_session_update(uint8_t* session) {
+    uintptr_t orig_ptr = g_orig_session_update.load(std::memory_order_relaxed);
+    auto orig = reinterpret_cast<SessionUpdateFn>(orig_ptr);
+
+    uint64_t session_start = now_ns();
+    uint64_t prev_end = g_prev_session_end_ns.load(std::memory_order_relaxed);
+    if (prev_end > 0 && session_start > prev_end) {
+        uint64_t rdt = session_start - prev_end;
+        if (rdt > 100000000ULL) {
+            rdt = 100000000ULL;
+        }
+        uint64_t old_r = g_ema_render_ns.load(std::memory_order_relaxed);
+        g_ema_render_ns.store((old_r * 3 + rdt) / 4, std::memory_order_relaxed);
+    }
+
+    uint64_t budget_ns = g_target_frame_ns.load(std::memory_order_relaxed);
+    if (budget_ns == 0 || g_in_burst.exchange(true, std::memory_order_acq_rel)) {
+        orig(session);
+        g_prev_session_end_ns.store(now_ns(), std::memory_order_relaxed);
+        return;
+    }
+
+    uint64_t h0 = g_total_hours.load(std::memory_order_relaxed);
+    uint64_t t0 = now_ns();
+    orig(session);
+    uint64_t t1 = now_ns();
+    uint64_t h_prev = g_total_hours.load(std::memory_order_relaxed);
+
+    if (h_prev > h0) {
+        uint64_t tick_dt = (t1 > t0) ? (t1 - t0) : 0;
+        if (tick_dt > 500000000ULL) {
+            tick_dt = 500000000ULL;
+        }
+        uint64_t old_t = g_ema_tick_ns.load(std::memory_order_relaxed);
+        uint64_t avg_tick = (old_t * 3 + tick_dt) / 4;
+        g_ema_tick_ns.store(avg_tick, std::memory_order_relaxed);
+
+        uint64_t render_est = g_ema_render_ns.load(std::memory_order_relaxed);
+        uint64_t sim_budget_ns = (budget_ns > render_est) ? (budget_ns - render_est) : 0;
+        uint64_t max_burst = g_max_burst_ticks.load(std::memory_order_relaxed);
+        uint64_t extra = 0;
+
+        while (extra < max_burst) {
+            uint64_t now = now_ns();
+            uint64_t elapsed = (now > session_start) ? (now - session_start) : 0;
+            uint64_t predicted_end = (budget_ns <= 55000000ULL)
+                                         ? (elapsed + (avg_tick * 3) / 4)
+                                         : elapsed;
+            if (predicted_end >= sim_budget_ns) {
+                break;
+            }
+            auto* gs = *reinterpret_cast<uint8_t* const*>(g_exe_base + RVA_GAMESTATE_PTR);
+            if (!gs) {
+                break;
+            }
+            int32_t speed = *reinterpret_cast<const int32_t*>(gs + OFF_GS_GAME_SPEED);
+            uint8_t paused = gs[OFF_GS_PAUSED];
+            int32_t num_players = *reinterpret_cast<const int32_t*>(gs + OFF_GS_NUM_PLAYERS);
+            // Strictly Speed 5 (index 4), unpaused, and singleplayer (num_players <= 1)
+            if (speed != 4 || paused != 0 || num_players > 1) {
+                break;
+            }
+
+            uint64_t bt0 = now_ns();
+            orig(session);
+            uint64_t bt1 = now_ns();
+            uint64_t h_now = g_total_hours.load(std::memory_order_relaxed);
+            if (h_now <= h_prev) {
+                break;
+            }
+            uint64_t bdt = (bt1 > bt0) ? (bt1 - bt0) : 0;
+            if (bdt > 500000000ULL) {
+                bdt = 500000000ULL;
+            }
+            avg_tick = (avg_tick * 3 + bdt) / 4;
+            g_ema_tick_ns.store(avg_tick, std::memory_order_relaxed);
+            h_prev = h_now;
+            ++extra;
+        }
+        if (extra > 0) {
+            g_burst_extra_ticks.fetch_add(extra, std::memory_order_relaxed);
+        }
+    }
+
+    g_prev_session_end_ns.store(now_ns(), std::memory_order_relaxed);
+    g_in_burst.store(false, std::memory_order_release);
+}
+
+// ============================================================================
+// 6. Mid-Tick Anti-Freeze Frame Pacer (ShouldRenderMidTick @ 0x2bacd0)
+//    Verified MSVC vtable offsets: +0x3a0 (is_async_ready), +0x2f0 (is_cam_moving)
+// ============================================================================
+using IdlerBoolMethodFn = uint8_t (*)(const uint8_t*);
+using TimerGetSecFn     = double (*)(const uint8_t*);
+
+extern "C" uint8_t hook_should_render_mid_tick(const uint8_t* idler, int game_speed) {
+    if (g_in_civil_war_depth.load(std::memory_order_relaxed) > 0) {
+        return 0;
+    }
+    uint64_t tsc = __rdtsc();
+    uint64_t tsc_per_ms = g_tsc_per_ms.load(std::memory_order_relaxed);
+    if (tsc_per_ms > 0) {
+        uint64_t next_tsc = g_last_mid_check_tsc.load(std::memory_order_relaxed);
+        if (tsc < next_tsc) {
+            g_mid_tick_fast_skip.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        }
+        g_last_mid_check_tsc.store(tsc + tsc_per_ms * 2, std::memory_order_relaxed);
+    } else {
+        uint64_t cal_ns = g_tsc_cal_ns.load(std::memory_order_relaxed);
+        uint64_t now = now_ns();
+        if (cal_ns == 0) {
+            g_tsc_cal_tsc.store(tsc, std::memory_order_relaxed);
+            g_tsc_cal_ns.store(now, std::memory_order_relaxed);
+        } else if (now > cal_ns && (now - cal_ns) >= 10000000ULL) {
+            uint64_t dt_ns = now - cal_ns;
+            uint64_t cal_tsc = g_tsc_cal_tsc.load(std::memory_order_relaxed);
+            if (tsc > cal_tsc) {
+                uint64_t dt_tsc = tsc - cal_tsc;
+                auto per_ms = static_cast<uint64_t>(
+                    (static_cast<unsigned __int128>(dt_tsc) * 1000000ULL) / dt_ns
+                );
+                if (per_ms >= 500000ULL && per_ms <= 20000000ULL) {
+                    g_tsc_per_ms.store(per_ms, std::memory_order_relaxed);
+                    g_last_mid_check_tsc.store(tsc + per_ms * 2, std::memory_order_relaxed);
+                }
+            }
+        }
+    }
+
+    g_mid_tick_checks.fetch_add(1, std::memory_order_relaxed);
+    if (!idler) {
+        return 0;
+    }
+    const auto* vtable = *reinterpret_cast<const uintptr_t* const*>(idler);
+    auto is_async_ready = reinterpret_cast<IdlerBoolMethodFn>(vtable[0x3a0 / 8]);
+    if (is_async_ready(idler) == 0) {
+        return 0;
+    }
+
+    auto is_cam_moving = reinterpret_cast<IdlerBoolMethodFn>(vtable[0x2f0 / 8]);
+    bool cam_moving = (is_cam_moving(idler) != 0);
+
+    uint64_t smooth_cfg = g_smooth_fps.load(std::memory_order_relaxed);
+    double smooth = static_cast<double>(smooth_cfg > 0 ? smooth_cfg : 30);
+    double target_dt = (cam_moving || game_speed <= 1) ? (1.0 / 60.0) : (1.0 / smooth);
+
+    double last_render_dur = static_cast<double>(*reinterpret_cast<const float*>(idler + 0x1c));
+    double min_safe = last_render_dur * 1.15;
+    double threshold = ((target_dt > min_safe) ? target_dt : min_safe) - 0.001;
+
+    const auto* timer_obj = *reinterpret_cast<const uint8_t* const*>(idler + 0x50);
+    if (!timer_obj) {
+        return 0;
+    }
+    auto get_sec = reinterpret_cast<TimerGetSecFn>(g_exe_base + RVA_TIMER_GET_SEC);
+    double now_sec = get_sec(timer_obj);
+    double last_render_sec = static_cast<double>(*reinterpret_cast<const float*>(idler + 0x2c));
+
+    if ((now_sec - last_render_sec) > threshold) {
+        g_mid_tick_renders.fetch_add(1, std::memory_order_relaxed);
+        if (tsc_per_ms > 0) {
+            g_last_mid_check_tsc.store(__rdtsc() + tsc_per_ms * 8, std::memory_order_relaxed);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+// ============================================================================
+// 7. Lock-Free Zero-Bounce Worker Scheduler (PopTaskOrWait @ 0x255d2a0)
+//    + FastTaskWait (0x255afb0) + SwitchToThread IAT Yield Elision (0x27892c0)
+// ============================================================================
+using PoolWakeFn  = void (*)(const uint8_t* pool, int wake_all);
+using EventWaitFn = void (*)(uint8_t* ev);
+using SwitchToThreadFn = BOOL (WINAPI*)();
+
+__forceinline size_t swizzle_ring_idx(uint32_t c, uint32_t mask) {
+    uint32_t d = c & mask;
+    uint32_t a = ((c >> 3) ^ c) & 7U;
+    d ^= a;
+    return static_cast<size_t>(d ^ (a << 3));
+}
+
+__forceinline uintptr_t try_pop_ring(
+    std::atomic<int32_t>* head,
+    std::atomic<int32_t>* tail,
+    std::atomic<uintptr_t>* slots,
+    uint32_t mask
+) {
+    int32_t t = tail->load(std::memory_order_acquire);
+    for (;;) {
+        int32_t h = head->load(std::memory_order_acquire);
+        if (static_cast<int32_t>(static_cast<uint32_t>(h) - static_cast<uint32_t>(t)) <= 0) {
+            return 0;
+        }
+        if (tail->compare_exchange_weak(
+                t,
+                static_cast<int32_t>(static_cast<uint32_t>(t) + 1U),
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            size_t idx = swizzle_ring_idx(static_cast<uint32_t>(t), mask);
+            std::atomic<uintptr_t>& slot = slots[idx];
+            for (;;) {
+                uintptr_t ptr = slot.exchange(0, std::memory_order_acq_rel);
+                if (ptr != 0) {
+                    return ptr;
+                }
+                while (slot.load(std::memory_order_acquire) == 0) {
+                    _mm_pause();
+                }
+            }
+        }
+    }
+}
+
+extern "C" uint8_t hook_pop_task_or_wait(uint8_t* worker, uintptr_t* out_task) {
+    auto* manager = *reinterpret_cast<uint8_t**>(worker);
+    uint32_t prio = *reinterpret_cast<const uint32_t*>(worker + 0x3c);
+    size_t bucket = (prio == 2) ? 0 : (prio == 1 ? 1 : (prio == 0 ? 2 : 1));
+    size_t bucket_off = bucket * 0x2c0;
+
+    uint8_t* pool = manager + 0x100 + bucket_off;
+    auto* running_tasks = reinterpret_cast<std::atomic<int32_t>*>(pool + 0x40);
+    auto* searching_workers = reinterpret_cast<std::atomic<int32_t>*>(pool + 0x80);
+    auto* global_q = *reinterpret_cast<uint8_t* const*>(pool + 0x298);
+
+    auto* local_head = reinterpret_cast<std::atomic<int32_t>*>(worker + 0x100);
+    auto* local_tail = reinterpret_cast<std::atomic<int32_t>*>(worker + 0x140);
+    auto* local_slots = reinterpret_cast<std::atomic<uintptr_t>*>(worker + 0x180);
+
+    auto* global_head = reinterpret_cast<std::atomic<int32_t>*>(global_q + 0x80);
+    auto* global_tail = reinterpret_cast<std::atomic<int32_t>*>(global_q + 0xc0);
+    auto* global_slots = reinterpret_cast<std::atomic<uintptr_t>*>(global_q + 0x100);
+
+    auto* state_ptr = reinterpret_cast<std::atomic<uint8_t>*>(worker + 0x13);
+    auto wake_fn = reinterpret_cast<PoolWakeFn>(g_exe_base + RVA_POOL_WAKE_ONE_OR_ALL);
+    auto wait_fn = reinterpret_cast<EventWaitFn>(g_exe_base + RVA_EVENT_WAIT_AUTO);
+
+    *out_task = 0;
+    searching_workers->fetch_add(1, std::memory_order_seq_cst);
+
+    uint64_t watcher_spins = 0;
+    for (;;) {
+        if (uintptr_t task = try_pop_ring(local_head, local_tail, local_slots, 0xfffU)) {
+            if (watcher_spins > 0) {
+                g_sched_watcher_polls.fetch_add(watcher_spins, std::memory_order_relaxed);
+            }
+            *out_task = task;
+            if (searching_workers->fetch_sub(1, std::memory_order_seq_cst) == 1) {
+                wake_fn(pool, 0);
+            }
+            return 1;
+        }
+        if (uintptr_t task = try_pop_ring(global_head, global_tail, global_slots, 0x7ffffU)) {
+            if (watcher_spins > 0) {
+                g_sched_watcher_polls.fetch_add(watcher_spins, std::memory_order_relaxed);
+            }
+            *out_task = task;
+            if (searching_workers->fetch_sub(1, std::memory_order_seq_cst) == 1) {
+                wake_fn(pool, 0);
+            }
+            return 1;
+        }
+        if (state_ptr->load(std::memory_order_acquire) == 2) {
+            if (watcher_spins > 0) {
+                g_sched_watcher_polls.fetch_add(watcher_spins, std::memory_order_relaxed);
+            }
+            wake_fn(pool, 1);
+            searching_workers->fetch_sub(1, std::memory_order_seq_cst);
+            return 0;
+        }
+
+        // Designated watcher zero-lock poll while tasks are running
+        if (searching_workers->load(std::memory_order_acquire) == 1 &&
+            running_tasks->load(std::memory_order_acquire) > 0) {
+            ++watcher_spins;
+            int pauses = (watcher_spins < 64) ? 4
+                         : (watcher_spins < 512) ? 16
+                         : (watcher_spins < 4096) ? 64
+                                                  : 128;
+            for (int i = 0; i < pauses; ++i) {
+                _mm_pause();
+            }
+            continue;
+        }
+
+        if (watcher_spins > 0) {
+            g_sched_watcher_polls.fetch_add(watcher_spins, std::memory_order_relaxed);
+            watcher_spins = 0;
+        }
+
+        int32_t prev = searching_workers->fetch_sub(1, std::memory_order_seq_cst);
+        if (prev == 1) {
+            int32_t rt = running_tasks->load(std::memory_order_seq_cst);
+            int32_t g_avail = static_cast<int32_t>(
+                static_cast<uint32_t>(global_head->load(std::memory_order_seq_cst)) -
+                static_cast<uint32_t>(global_tail->load(std::memory_order_acquire))
+            );
+            int32_t l_avail = static_cast<int32_t>(
+                static_cast<uint32_t>(local_head->load(std::memory_order_seq_cst)) -
+                static_cast<uint32_t>(local_tail->load(std::memory_order_acquire))
+            );
+            if (rt > 0 || g_avail > 0 || l_avail > 0) {
+                searching_workers->fetch_add(1, std::memory_order_seq_cst);
+                _mm_pause();
+                continue;
+            }
+        }
+
+        uint8_t* sleep_flag = worker + 0x15;
+        uint8_t old_sleep = *sleep_flag;
+        *sleep_flag = 1;
+        auto worker_idx = static_cast<intptr_t>(*reinterpret_cast<const int32_t*>(worker + 0x38));
+        auto* events_base = *reinterpret_cast<uint8_t* const*>(pool);
+        uint8_t* ev = events_base + worker_idx * WIN_CEVENT_SIZE;
+        wait_fn(ev);
+        *sleep_flag = old_sleep;
+
+        searching_workers->fetch_add(1, std::memory_order_seq_cst);
+    }
+}
+
+extern "C" void hook_task_wait(const uint8_t* task) {
+    if (!task) {
+        return;
+    }
+    const auto* job = *reinterpret_cast<const uint8_t* const*>(task + 0x18);
+    if (!job) {
+        return;
+    }
+    // Verified @ 0x255afbf: job state byte on MSVC x64 is at +0x60
+    const auto* st = reinterpret_cast<const std::atomic<uint8_t>*>(job + 0x60);
+    uint32_t spins = 0;
+    while ((st->load(std::memory_order_acquire) & 0xfeU) != 2U) {
+        for (int i = 0; i < 8; ++i) {
+            _mm_pause();
+        }
+        ++spins;
+        if ((spins & 0xfffU) == 0) {
+            uintptr_t fn = g_orig_switch_to_thread.load(std::memory_order_relaxed);
+            if (fn != 0) {
+                reinterpret_cast<SwitchToThreadFn>(fn)();
+            }
+        }
+    }
+}
+
+static BOOL WINAPI hook_switch_to_thread() {
+    uint32_t n = 1;
+    if (g_tls_yield_idx != TLS_OUT_OF_INDEXES) {
+        n = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(TlsGetValue(g_tls_yield_idx))) + 1U;
+        TlsSetValue(g_tls_yield_idx, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(n)));
+    }
+    if ((n & 0xffU) != 0) {
+        for (int i = 0; i < 24; ++i) {
+            _mm_pause();
+        }
+        g_yield_elided.fetch_add(1, std::memory_order_relaxed);
+        return FALSE;
+    }
+    uintptr_t fn = g_orig_switch_to_thread.load(std::memory_order_relaxed);
+    return fn ? reinterpret_cast<SwitchToThreadFn>(fn)() : FALSE;
+}
+
+// ============================================================================
+// 8. Topology-Aware CPU Core Pinning (WorkerThreadInit @ 0x255a110)
+//    Automatically detects physical cores vs SMT siblings via Win32 API and
+//    gracefully skips asymmetric Intel Hybrid (P+E) layouts so Windows 11
+//    Thread Director remains in charge on hybrid CPUs.
+// ============================================================================
+static bool init_cpu_topology() {
+    DWORD byte_len = 0;
+    GetLogicalProcessorInformation(nullptr, &byte_len);
+    if (byte_len == 0 || byte_len > 65536) {
+        return false;
+    }
+    auto* buf = static_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION*>(
+        HeapAlloc(GetProcessHeap(), 0, byte_len)
+    );
+    if (!buf) {
+        return false;
+    }
+    if (!GetLogicalProcessorInformation(buf, &byte_len)) {
+        HeapFree(GetProcessHeap(), 0, buf);
+        return false;
+    }
+
+    uint32_t primaries[64] = {0};
+    size_t n_prim = 0;
+    uint32_t siblings[64] = {0};
+    size_t n_sib = 0;
+    int32_t main_sibling = -1;
+    int expected_threads_per_core = 0;
+    bool hybrid_detected = false;
+
+    size_t count = byte_len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+    for (size_t i = 0; i < count; ++i) {
+        if (buf[i].Relationship != RelationProcessorCore) {
+            continue;
+        }
+        ULONG_PTR mask = buf[i].ProcessorMask;
+        if (mask == 0) {
+            continue;
+        }
+        int pop = static_cast<int>(__popcnt64(static_cast<uint64_t>(mask)));
+        if (expected_threads_per_core == 0) {
+            expected_threads_per_core = pop;
+        } else if (pop != expected_threads_per_core) {
+            hybrid_detected = true;
+            break;
+        }
+
+        int first_cpu = -1;
+        for (uint32_t c = 0; c < 64; ++c) {
+            if ((mask & (static_cast<ULONG_PTR>(1) << c)) == 0) {
+                continue;
+            }
+            if (first_cpu < 0) {
+                first_cpu = static_cast<int>(c);
+                if (c != 0 && n_prim < 64) {
+                    primaries[n_prim++] = c;
+                }
+            } else {
+                if (first_cpu == 0) {
+                    main_sibling = static_cast<int32_t>(c);
+                } else if (n_sib < 64) {
+                    siblings[n_sib++] = c;
+                }
+            }
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, buf);
+
+    if (hybrid_detected || n_prim < 3) {
+        return false;
+    }
+
+    g_topo_worker_len = 0;
+    for (size_t i = 0; i < n_prim && g_topo_worker_len < 64; ++i) {
+        g_topo_worker_cpus[g_topo_worker_len++] = primaries[i];
+    }
+    for (size_t i = 0; i < n_sib && g_topo_worker_len < 64; ++i) {
+        g_topo_worker_cpus[g_topo_worker_len++] = siblings[i];
+    }
+    if (main_sibling >= 0 && g_topo_worker_len < 64) {
+        g_topo_worker_cpus[g_topo_worker_len++] = static_cast<uint32_t>(main_sibling);
+    }
+
+    g_topo_bg_len = 0;
+    for (size_t i = 0; i < n_sib && g_topo_bg_len < 64; ++i) {
+        g_topo_bg_cpus[g_topo_bg_len++] = siblings[i];
+    }
+    if (main_sibling >= 0 && g_topo_bg_len < 64) {
+        g_topo_bg_cpus[g_topo_bg_len++] = static_cast<uint32_t>(main_sibling);
+    }
+    if (g_topo_bg_len == 0) {
+        for (size_t i = n_prim; i > 0 && g_topo_bg_len < 64; --i) {
+            g_topo_bg_cpus[g_topo_bg_len++] = primaries[i - 1];
+        }
+    }
+    return g_topo_worker_len > 0;
+}
+
+extern "C" void hook_worker_thread_init(int prio) {
+    HANDLE cur = GetCurrentThread();
+    if (prio == 2) {
+        SetThreadPriority(cur, THREAD_PRIORITY_ABOVE_NORMAL);
+    } else if (prio == 1) {
+        SetThreadPriority(cur, THREAD_PRIORITY_NORMAL);
+    } else if (prio == 0) {
+        SetThreadPriority(cur, THREAD_PRIORITY_BELOW_NORMAL);
+    }
+
+    if (g_affinity_enabled.load(std::memory_order_relaxed)) {
+        if (prio == 2 && g_topo_worker_len > 0) {
+            size_t slot = g_worker_pin_counter.fetch_add(1, std::memory_order_relaxed);
+            uint32_t cpu = g_topo_worker_cpus[slot % g_topo_worker_len];
+            SetThreadAffinityMask(cur, static_cast<DWORD_PTR>(1ULL << cpu));
+        } else if (prio == 0 && g_topo_bg_len > 0) {
+            size_t slot = g_bg_pin_counter.fetch_add(1, std::memory_order_relaxed);
+            uint32_t cpu = g_topo_bg_cpus[slot % g_topo_bg_len];
+            SetThreadAffinityMask(cur, static_cast<DWORD_PTR>(1ULL << cpu));
+        }
+    }
+}
+
+// ============================================================================
+// 9. QuietLog (MSVC 32-byte SSO std::string), FastSave & NoTelemetry (MSVC ABI)
+// ============================================================================
+struct MsvcString {
+    union {
+        char buf[16];
+        const char* ptr;
+    } u;
+    uint64_t size;
+    uint64_t cap;
+
+    const char* data() const { return (cap > 15ULL) ? u.ptr : u.buf; }
+};
+
+using LoggerDeletingDtorFn = void (*)(uint8_t* self, uint32_t flags);
+using LoggerWriteFn = void (*)(
+    uint8_t* self,
+    int level,
+    const MsvcString* file,
+    int line,
+    const MsvcString* msg
+);
+
+static uint64_t fnv1a_log_sig(
+    int level,
+    const MsvcString* file,
+    int line,
+    const MsvcString* msg
+) {
+    uint64_t h = 0xcbf29ce484222325ULL;
+    auto mix = [&](uint8_t b) {
+        h ^= static_cast<uint64_t>(b);
+        h *= 0x100000001b3ULL;
+    };
+    for (int i = 0; i < 4; ++i) {
+        mix(static_cast<uint8_t>((static_cast<uint32_t>(level) >> (i * 8)) & 0xffU));
+    }
+    for (int i = 0; i < 4; ++i) {
+        mix(static_cast<uint8_t>((static_cast<uint32_t>(line) >> (i * 8)) & 0xffU));
+    }
+    if (file && file->size > 0) {
+        const char* p = file->data();
+        if (p) {
+            size_t n = (file->size < 64) ? static_cast<size_t>(file->size) : 64;
+            for (size_t i = 0; i < n; ++i) {
+                mix(static_cast<uint8_t>(p[i]));
+            }
+        }
+    }
+    if (msg && msg->size > 0) {
+        const char* p = msg->data();
+        if (p) {
+            size_t n = (msg->size < 140) ? static_cast<size_t>(msg->size) : 140;
+            size_t kept = 0;
+            for (size_t i = 0; i < n; ++i) {
+                uint8_t c = static_cast<uint8_t>(p[i]);
+                if (c >= '0' && c <= '9') {
+                    continue;
+                }
+                mix(c);
+                if (++kept >= 96) {
+                    break;
+                }
+            }
+        }
+    }
+    return (h == 0) ? 1ULL : h;
+}
+
+static bool should_allow_log(uint64_t sig) {
+    static constexpr uint32_t MAX_PER_PATTERN = 8;
+    size_t idx = static_cast<size_t>(sig) & (LOG_DEDUP_CAP - 1);
+    for (size_t probe = 0; probe < 32; ++probe) {
+        LogDedupSlot& slot = g_log_dedup[idx];
+        uint64_t existing = slot.hash.load(std::memory_order_relaxed);
+        uint64_t zero = 0;
+        if (existing == sig ||
+            (existing == 0 &&
+             slot.hash.compare_exchange_strong(
+                 zero, sig, std::memory_order_relaxed, std::memory_order_relaxed))) {
+            uint32_t prev = slot.count.fetch_add(1, std::memory_order_relaxed);
+            return prev < MAX_PER_PATTERN;
+        }
+        idx = (idx + 1) & (LOG_DEDUP_CAP - 1);
+    }
+    return true;
+}
+
+extern "C" void hook_logger_write(
+    uint8_t* self,
+    int level,
+    const MsvcString* file,
+    int line,
+    const MsvcString* msg
+) {
+    if (!self) {
+        return;
+    }
+    uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(self);
+    uintptr_t orig_fn = 0;
+    for (size_t i = 0; i < LOG_VT_CAP; ++i) {
+        if (g_log_vt_keys[i].load(std::memory_order_acquire) == vtable) {
+            orig_fn = g_log_vt_orig[i].load(std::memory_order_relaxed);
+            break;
+        }
+    }
+    if (orig_fn == 0) {
+        return;
+    }
+
+    if (g_in_civil_war_depth.load(std::memory_order_relaxed) > 0 && level >= 2) {
+        g_log_suppressed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    uint64_t sig = fnv1a_log_sig(level, file, line, msg);
+    if (!should_allow_log(sig)) {
+        g_log_suppressed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    g_log_allowed.fetch_add(1, std::memory_order_relaxed);
+    reinterpret_cast<LoggerWriteFn>(orig_fn)(self, level, file, line, msg);
+}
+
+static void wrap_logger_vtable(uint8_t* logger) {
+    if (!logger) {
+        return;
+    }
+    uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(logger);
+    if (vtable == 0) {
+        return;
+    }
+    // Verified @ 0x254f25f: CLogger::Write is slot 1 (+0x08) on MSVC x64
+    uintptr_t write_slot_addr = vtable + 0x08;
+    uintptr_t orig_write = *reinterpret_cast<const uintptr_t*>(write_slot_addr);
+    auto hook_addr = reinterpret_cast<uintptr_t>(&hook_logger_write);
+    if (orig_write == 0 || orig_write == hook_addr) {
+        return;
+    }
+    for (size_t i = 0; i < LOG_VT_CAP; ++i) {
+        uintptr_t cur = g_log_vt_keys[i].load(std::memory_order_acquire);
+        if (cur == vtable) {
+            return;
+        }
+        uintptr_t zero = 0;
+        if (cur == 0 &&
+            g_log_vt_keys[i].compare_exchange_strong(
+                zero, vtable, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            g_log_vt_orig[i].store(orig_write, std::memory_order_release);
+            patch_data_ptr(write_slot_addr, hook_addr);
+            return;
+        }
+    }
+}
+
+extern "C" void hook_set_logger(uint8_t* new_logger) {
+    if (new_logger) {
+        wrap_logger_vtable(new_logger);
+    }
+    auto* slot = reinterpret_cast<uint8_t**>(g_exe_base + RVA_G_LOGGER_PTR);
+    uint8_t* old = *slot;
+    *slot = new_logger;
+    if (old && old != new_logger) {
+        const auto* vt = *reinterpret_cast<const uintptr_t* const*>(old);
+        if (vt && vt[0] != 0) {
+            // Verified @ 0x2550066: scalar deleting destructor at slot 0 with flags=1
+            reinterpret_cast<LoggerDeletingDtorFn>(vt[0])(old, 1);
+        }
+    }
+}
+
+extern "C" int hook_fast_flush(void* /*file_handle*/) {
+    g_fsync_skipped.fetch_add(1, std::memory_order_relaxed);
+    return 1;
+}
+
+using TelemetryPayloadDtorFn = void (*)(void* payload);
+
+extern "C" void hook_queue_and_send_telemetry(void* /*api*/, void* payload) {
+    // MSVC x64 ABI: callee MUST destroy by-value C++ objects!
+    if (payload && g_exe_base != 0) {
+        uintptr_t dtor_addr = *reinterpret_cast<const uintptr_t*>(
+            g_exe_base + RVA_IAT_TELEM_PAYLOAD_DTOR
+        );
+        if (dtor_addr != 0) {
+            reinterpret_cast<TelemetryPayloadDtorFn>(dtor_addr)(payload);
+        }
+    }
+    g_telemetry_blocked.fetch_add(1, std::memory_order_relaxed);
+}
+
+// ============================================================================
+// 9B. v1.0 Deep Engine & AI Modules (MSVC x64 ABI Verified)
+//     - CountryGrain     : CPdxParallelForRange::Init (0x2576ac0, returns `this`)
+//     - FastModifier     : Branchless CMOV CModifier::GetValue (0x5a63d0, hidden out_fp in %rdx)
+//     - FastAlloc        : 128 MB lock-free ABA-safe slab + Win32 TLS magazine (0x2798570)
+//     - CivilWarFix      : Coalesces 100+ per-state CInGameIdler map/supply rebuilds (0x1169250)
+//     - AiSmartSupply    : Mod-safe NDefines clamping for proactive supply hubs & railways
+//     - AiThrottleMinors : Staggered 4h cadence strictly for peaceful <12-state non-major AI minors
+// ============================================================================
+using ParforRangeInitFn = uint8_t* (*)(
+    uint8_t* self,
+    int start,
+    int end,
+    int mode,
+    int max_threads,
+    const uint8_t* pool_pair
+);
+
+extern "C" uint8_t* hook_parfor_range_init(
+    uint8_t* self,
+    int start,
+    int end,
+    int mode,
+    int max_threads,
+    const uint8_t* pool_pair
+) {
+    auto orig = reinterpret_cast<ParforRangeInitFn>(
+        g_orig_parfor_range_init.load(std::memory_order_relaxed)
+    );
+    uint8_t* res = orig(self, start, end, mode, max_threads, pool_pair);
+    g_parfor_total.fetch_add(1, std::memory_order_relaxed);
+    if (g_country_grain_enabled.load(std::memory_order_relaxed) && self != nullptr) {
+        int n = end - start;
+        if (n >= 17 && n <= 220) {
+            auto* chunk_ptr = reinterpret_cast<int32_t*>(self + 0x18);
+            if (*chunk_ptr > 1) {
+                *chunk_ptr = 1;
+                g_parfor_rebalanced.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    return res;
+}
+
+struct ModifierEntry {
+    uint32_t key;
+    uint32_t pad;
+    int64_t value;
+};
+using FeatureMaskFn = uint32_t (*)();
+
+extern "C" int64_t* hook_modifier_get_value(
+    const uint8_t* arr,
+    int64_t* out_fp,
+    uint32_t key
+) {
+    int32_t len = *reinterpret_cast<const int32_t*>(arr + 0x0c);
+    if (len <= 0) {
+        *out_fp = 0;
+        return out_fp;
+    }
+    const auto* base = *reinterpret_cast<const ModifierEntry* const*>(arr);
+    auto n = static_cast<size_t>(len);
+
+    // Guaranteed branchless CMOV binary search (zero branch mispredictions on Zen/Core)
+    while (n > 1) {
+        size_t half = n >> 1;
+        const ModifierEntry* mid = base + half;
+        uint32_t mid_key = mid->key;
+        __asm__(
+            "cmpl %[key], %[mid_key]\n\t"
+            "cmovbeq %[mid], %[base]"
+            : [base] "+r"(base)
+            : [mid_key] "r"(mid_key), [key] "r"(key), [mid] "r"(mid)
+            : "cc"
+        );
+        n -= half;
+    }
+
+    if (base->key != key) {
+        *out_fp = 0;
+        return out_fp;
+    }
+
+    const auto* defs = *reinterpret_cast<const uint8_t* const*>(g_exe_base + RVA_G_MODIFIER_DEFS);
+    const uint8_t* def = defs + static_cast<intptr_t>(static_cast<int32_t>(key)) * 0x78;
+    uint32_t mask = *reinterpret_cast<const uint32_t*>(def + 0x68);
+    if (mask != 0) {
+        uintptr_t fn_ptr = *reinterpret_cast<const uintptr_t*>(g_exe_base + RVA_G_FEATURE_FN);
+        if (fn_ptr == 0 || (reinterpret_cast<FeatureMaskFn>(fn_ptr)() & mask) == 0) {
+            *out_fp = 0;
+            return out_fp;
+        }
+    }
+
+    int64_t val = base->value;
+    if ((def[0x60] & 0x10U) != 0) {
+        if (val < 0) val = 0;
+        else if (val > 100000LL) val = 100000LL;
+    }
+    *out_fp = val;
+    return out_fp;
+}
+
+// --- Lock-Free ABA-Safe Slab + Win32 TLS Magazine Allocator ---
+static constexpr size_t   SLAB_ARENA_SIZE = 128ULL * 1024ULL * 1024ULL;
+static constexpr size_t   SLAB_PAGE_SIZE  = 65536ULL;
+static constexpr uint32_t SLAB_MAGIC      = 0x484f4934U;
+static constexpr uint64_t SLAB_OFF_MASK   = 0x0fffffffULL;
+static constexpr uint64_t SLAB_GEN_INC    = 1ULL << 28;
+static constexpr size_t   SLAB_CLASS_BYTES[4] = {64, 128, 256, 512};
+static constexpr size_t   TLS_MAG_CAP     = 64;
+static constexpr size_t   MAX_TLS_MAGS    = 256;
+
+struct alignas(64) SlabPageHdr {
+    uint32_t magic;
+    uint32_t class_idx;
+    uint64_t pad[7];
+};
+
+struct TlsSlabMag {
+    size_t counts[4];
+    uint8_t* slots[4][TLS_MAG_CAP];
+};
+
+static std::atomic<uintptr_t> g_slab_arena_base{0};
+static std::atomic<size_t>    g_slab_bump_off{0};
+static std::atomic<uint64_t>  g_slab_global_free[4];
+static std::atomic<size_t>    g_tls_mag_pool_next{0};
+static TlsSlabMag             g_tls_mag_pool[MAX_TLS_MAGS];
+
+static bool init_slab_arena() {
+    void* raw = VirtualAlloc(
+        nullptr,
+        SLAB_ARENA_SIZE + SLAB_PAGE_SIZE,
+        MEM_RESERVE,
+        PAGE_NOACCESS
+    );
+    if (!raw) {
+        return false;
+    }
+    uintptr_t aligned = (reinterpret_cast<uintptr_t>(raw) + (SLAB_PAGE_SIZE - 1)) &
+                        ~(SLAB_PAGE_SIZE - 1);
+    g_slab_bump_off.store(0, std::memory_order_release);
+    g_slab_arena_base.store(aligned, std::memory_order_release);
+    return true;
+}
+
+__forceinline void slab_push_global(uintptr_t arena, size_t cls, uint8_t* ptr) {
+    auto off = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ptr) - arena);
+    auto& list = g_slab_global_free[cls];
+    uint64_t head = list.load(std::memory_order_acquire);
+    for (;;) {
+        *reinterpret_cast<uint32_t*>(ptr) = static_cast<uint32_t>(head & SLAB_OFF_MASK);
+        uint64_t next_head = ((head & ~SLAB_OFF_MASK) + SLAB_GEN_INC) | static_cast<uint64_t>(off);
+        if (list.compare_exchange_weak(
+                head, next_head, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            break;
+        }
+    }
+}
+
+__forceinline uint8_t* slab_pop_global(uintptr_t arena, size_t cls) {
+    auto& list = g_slab_global_free[cls];
+    uint64_t head = list.load(std::memory_order_acquire);
+    for (;;) {
+        auto off = static_cast<size_t>(head & SLAB_OFF_MASK);
+        if (off == 0) {
+            return nullptr;
+        }
+        auto* ptr = reinterpret_cast<uint8_t*>(arena + off);
+        uint64_t next_off = static_cast<uint64_t>(*reinterpret_cast<const uint32_t*>(ptr));
+        uint64_t next_head = ((head & ~SLAB_OFF_MASK) + SLAB_GEN_INC) | next_off;
+        if (list.compare_exchange_weak(
+                head, next_head, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return ptr;
+        }
+    }
+}
+
+static uint8_t* slab_carve_page(uintptr_t arena, size_t cls, TlsSlabMag* mag) {
+    size_t cur = g_slab_bump_off.load(std::memory_order_relaxed);
+    size_t page_off = 0;
+    for (;;) {
+        if (cur + SLAB_PAGE_SIZE > SLAB_ARENA_SIZE) {
+            return nullptr;
+        }
+        if (g_slab_bump_off.compare_exchange_weak(
+                cur,
+                cur + SLAB_PAGE_SIZE,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+            page_off = cur;
+            break;
+        }
+    }
+
+    auto* page_ptr = reinterpret_cast<uint8_t*>(arena + page_off);
+    if (!VirtualAlloc(page_ptr, SLAB_PAGE_SIZE, MEM_COMMIT, PAGE_READWRITE)) {
+        return nullptr;
+    }
+
+    auto* hdr = reinterpret_cast<SlabPageHdr*>(page_ptr);
+    hdr->magic = SLAB_MAGIC;
+    hdr->class_idx = static_cast<uint32_t>(cls);
+
+    size_t bsize = SLAB_CLASS_BYTES[cls];
+    uint8_t* first_block = page_ptr + 64;
+    size_t off = 64 + bsize;
+    if (mag != nullptr) {
+        while (off + bsize <= SLAB_PAGE_SIZE && mag->counts[cls] < (TLS_MAG_CAP / 2)) {
+            mag->slots[cls][mag->counts[cls]++] = page_ptr + off;
+            off += bsize;
+        }
+    }
+    while (off + bsize <= SLAB_PAGE_SIZE) {
+        slab_push_global(arena, cls, page_ptr + off);
+        off += bsize;
+    }
+    return first_block;
+}
+
+__forceinline TlsSlabMag* get_tls_slab_mag() {
+    if (g_tls_slab_idx == TLS_OUT_OF_INDEXES) {
+        return nullptr;
+    }
+    auto* mag = static_cast<TlsSlabMag*>(TlsGetValue(g_tls_slab_idx));
+    if (!mag) {
+        size_t idx = g_tls_mag_pool_next.fetch_add(1, std::memory_order_relaxed);
+        if (idx < MAX_TLS_MAGS) {
+            mag = &g_tls_mag_pool[idx];
+            TlsSetValue(g_tls_slab_idx, mag);
+        }
+    }
+    return mag;
+}
+
+using PdxAllocFn = void* (*)(void* self, size_t size, size_t align);
+using PdxFreeFn  = void (*)(void* self, void* ptr);
+
+extern "C" void* hook_pdx_alloc(void* self, size_t size, size_t align) {
+    if (align <= 16 && size <= 512) {
+        uintptr_t arena = g_slab_arena_base.load(std::memory_order_relaxed);
+        if (arena != 0) {
+            size_t cls = (size <= 64) ? 0 : (size <= 128) ? 1 : (size <= 256) ? 2 : 3;
+            TlsSlabMag* mag = get_tls_slab_mag();
+            uint8_t* block = nullptr;
+            if (mag) {
+                size_t n = mag->counts[cls];
+                if (n > 0) {
+                    mag->counts[cls] = n - 1;
+                    block = mag->slots[cls][n - 1];
+                } else {
+                    block = slab_pop_global(arena, cls);
+                    if (block) {
+                        for (int i = 0; i < 15; ++i) {
+                            uint8_t* extra = slab_pop_global(arena, cls);
+                            if (!extra) break;
+                            mag->slots[cls][mag->counts[cls]++] = extra;
+                        }
+                    } else {
+                        block = slab_carve_page(arena, cls, mag);
+                    }
+                }
+            } else {
+                block = slab_pop_global(arena, cls);
+                if (!block) {
+                    block = slab_carve_page(arena, cls, nullptr);
+                }
+            }
+            if (block) {
+                g_slab_alloc_hits.fetch_add(1, std::memory_order_relaxed);
+                return block;
+            }
+        }
+    }
+    g_slab_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    return reinterpret_cast<PdxAllocFn>(
+        g_orig_pdx_alloc.load(std::memory_order_relaxed)
+    )(self, size, align);
+}
+
+extern "C" void hook_pdx_free(void* self, void* ptr) {
+    if (!ptr) {
+        return;
+    }
+    uintptr_t arena = g_slab_arena_base.load(std::memory_order_relaxed);
+    uintptr_t uptr = reinterpret_cast<uintptr_t>(ptr);
+    if (arena != 0 && (uptr - arena) < SLAB_ARENA_SIZE) {
+        const auto* hdr = reinterpret_cast<const SlabPageHdr*>(uptr & ~(SLAB_PAGE_SIZE - 1));
+        if (hdr->magic == SLAB_MAGIC && hdr->class_idx < 4) {
+            size_t cls = hdr->class_idx;
+            g_slab_free_hits.fetch_add(1, std::memory_order_relaxed);
+            TlsSlabMag* mag = get_tls_slab_mag();
+            auto* bptr = static_cast<uint8_t*>(ptr);
+            if (mag) {
+                size_t n = mag->counts[cls];
+                if (n >= TLS_MAG_CAP) {
+                    size_t keep = TLS_MAG_CAP / 2;
+                    for (size_t i = keep; i < n; ++i) {
+                        slab_push_global(arena, cls, mag->slots[cls][i]);
+                    }
+                    n = keep;
+                }
+                mag->slots[cls][n] = bptr;
+                mag->counts[cls] = n + 1;
+            } else {
+                slab_push_global(arena, cls, bptr);
+            }
+            return;
+        }
+    }
+    reinterpret_cast<PdxFreeFn>(g_orig_pdx_free.load(std::memory_order_relaxed))(self, ptr);
+}
+
+// --- Civil War Freeze Fix ---
+using IdlerMapRebuildFn = void (*)(uint8_t* self);
+using CwSetupExecFn     = void (*)(uint8_t* self, uint8_t* out_tag, uint8_t flag);
+
+extern "C" void hook_idler_map_rebuild(uint8_t* self) {
+    if (g_in_civil_war_depth.load(std::memory_order_acquire) > 0) {
+        if (self != nullptr) {
+            g_deferred_cw_idler.store(
+                reinterpret_cast<uintptr_t>(self),
+                std::memory_order_release
+            );
+        }
+        g_cw_rebuilds_coalesced.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    reinterpret_cast<IdlerMapRebuildFn>(
+        g_orig_idler_map_rebuild.load(std::memory_order_relaxed)
+    )(self);
+}
+
+extern "C" void hook_cw_setup_exec(uint8_t* self, uint8_t* out_tag, uint8_t flag) {
+    g_in_civil_war_depth.fetch_add(1, std::memory_order_acq_rel);
+    reinterpret_cast<CwSetupExecFn>(
+        g_orig_cw_setup_exec.load(std::memory_order_relaxed)
+    )(self, out_tag, flag);
+
+    if (g_in_civil_war_depth.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        uintptr_t deferred_idler = g_deferred_cw_idler.exchange(0, std::memory_order_acq_rel);
+        uintptr_t orig_rebuild = g_orig_idler_map_rebuild.load(std::memory_order_relaxed);
+        if (deferred_idler != 0 && orig_rebuild != 0) {
+            reinterpret_cast<IdlerMapRebuildFn>(orig_rebuild)(
+                reinterpret_cast<uint8_t*>(deferred_idler)
+            );
+        }
+    }
+}
+
+// --- Smart AI Supply & Railway Construction (Mod-Safe Clamping) ---
+static void apply_ai_smart_supply_once() {
+    bool expected = false;
+    if (!g_ai_smart_supply_applied.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        return;
+    }
+    if (g_exe_base == 0) {
+        return;
+    }
+    auto* freq_ptr      = reinterpret_cast<int32_t*>(g_exe_base + RVA_NDEF_SUPPLY_FREQ_HRS);
+    auto* sat_ptr       = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_SUPPLY_SAT_THR);
+    auto* prio_hub_ptr  = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_PRIO_SUPPLY_BLDG);
+    auto* prio_rail_ptr = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_PRIO_RAILWAY);
+    auto* depth_ptr     = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_SUPPLY_MAX_DEPTH);
+    auto* crisis_ptr    = reinterpret_cast<int64_t*>(g_exe_base + RVA_NDEF_SUPPLY_CRISIS_LIM);
+
+    int32_t old_freq   = *freq_ptr;
+    int64_t old_sat    = *sat_ptr;
+    int64_t old_hub    = *prio_hub_ptr;
+    int64_t old_rail   = *prio_rail_ptr;
+    int64_t old_depth  = *depth_ptr;
+    int64_t old_crisis = *crisis_ptr;
+
+    if (old_freq > 0 && old_sat > 0 && old_hub > 0 && old_rail > 0) {
+        if (old_freq > 24)        *freq_ptr      = 24;
+        if (old_sat > 65000LL)    *sat_ptr       = 65000LL;
+        if (old_hub < 450000LL)   *prio_hub_ptr  = 450000LL;
+        if (old_rail < 800000LL)  *prio_rail_ptr = 800000LL;
+        if (old_depth > 0 && old_depth < 900000LL) *depth_ptr  = 900000LL;
+        if (old_crisis > 0 && old_crisis < 25000LL) *crisis_ptr = 25000LL;
+
+        char msg[384];
+        std::snprintf(
+            msg,
+            sizeof(msg),
+            "[hoi4-accel] AI Smart Supply active: freq=%dh->%dh, sat=%.2f->%.2f, hub_prio=%.2f->%.2f, rail_prio=%.2f->%.2f, bfs_depth=%.0f->%.0f\r\n",
+            static_cast<int>(old_freq),
+            static_cast<int>(*freq_ptr),
+            static_cast<double>(old_sat) / 100000.0,
+            static_cast<double>(*sat_ptr) / 100000.0,
+            static_cast<double>(old_hub) / 100000.0,
+            static_cast<double>(*prio_hub_ptr) / 100000.0,
+            static_cast<double>(old_rail) / 100000.0,
+            static_cast<double>(*prio_rail_ptr) / 100000.0,
+            static_cast<double>(old_depth) / 100000.0,
+            static_cast<double>(*depth_ptr) / 100000.0
+        );
+        append_log_line(msg);
+    }
+}
+
+// --- Dormant Peaceful Minor AI Hourly Throttling ---
+using OwnerAccessCountryFn = uint8_t* (*)(uint8_t* owner);
+using CountryHasHumanFn    = uint8_t (*)(uint8_t* country);
+using DiploIsAtWarFn       = uint8_t (*)(const uint8_t* diplo, uint8_t arg);
+using CountryAiPassFn      = void (*)(uint8_t* self, uintptr_t a1, uintptr_t a2);
+
+__forceinline uint8_t* get_country_from_ai(uint8_t* self) {
+    if (!self) return nullptr;
+    auto* owner = *reinterpret_cast<uint8_t* const*>(self + 0x08);
+    if (!owner) return nullptr;
+    const auto* owner_vt = *reinterpret_cast<const uintptr_t* const*>(owner);
+    if (!owner_vt || owner_vt[0x50 / 8] == 0) return nullptr;
+    return reinterpret_cast<OwnerAccessCountryFn>(owner_vt[0x50 / 8])(owner);
+}
+
+extern "C" void hook_country_ai_pass1(uint8_t* self, uintptr_t a1, uintptr_t a2) {
+    auto orig = reinterpret_cast<CountryAiPassFn>(
+        g_orig_country_ai_pass1.load(std::memory_order_relaxed)
+    );
+    if (g_exe_base != 0 && self != nullptr && self[0x60] != 0) {
+        uint8_t* country = get_country_from_ai(self);
+        if (country != nullptr) {
+            uint32_t tag_id = *reinterpret_cast<const uint32_t*>(country + OFF_COUNTRY_TAG_ID);
+            size_t bit_idx = static_cast<size_t>(tag_id) & 511U;
+            size_t word_idx = bit_idx >> 6;
+            uint64_t bit_mask = 1ULL << (bit_idx & 63U);
+
+            int32_t num_states = *reinterpret_cast<const int32_t*>(country + OFF_COUNTRY_NUM_STATES);
+            uint8_t is_major = country[OFF_COUNTRY_IS_MAJOR];
+            const auto* gs = *reinterpret_cast<const uint8_t* const*>(g_exe_base + RVA_GAMESTATE_PTR);
+
+            bool throttle = false;
+            if (num_states >= 1 && num_states < 12 && is_major == 0 && gs != nullptr) {
+                int32_t raw_date = *reinterpret_cast<const int32_t*>(gs + OFF_GS_CDATE_HOURS);
+                auto total_hours = static_cast<uint32_t>(raw_date - 0x029c55c0);
+                if ((total_hours % 24U) != 0U && ((total_hours + tag_id) & 3U) != 0U) {
+                    auto* c10_ptr = reinterpret_cast<int32_t*>(self + 0x10);
+                    auto* c14_ptr = reinterpret_cast<int32_t*>(self + 0x14);
+                    int32_t c10 = *c10_ptr;
+                    int32_t c14 = *c14_ptr;
+                    if (c10 > 1 && c14 > 1) {
+                        auto has_human = reinterpret_cast<CountryHasHumanFn>(
+                            g_exe_base + RVA_COUNTRY_HAS_HUMAN
+                        );
+                        if (has_human(country) == 0) {
+                            const auto* diplo = *reinterpret_cast<const uint8_t* const*>(
+                                country + OFF_COUNTRY_DIPLO_PTR
+                            );
+                            if (diplo != nullptr) {
+                                auto is_at_war = reinterpret_cast<DiploIsAtWarFn>(
+                                    g_exe_base + RVA_DIPLO_IS_AT_WAR
+                                );
+                                if (is_at_war(diplo, 0) == 0) {
+                                    *c10_ptr = c10 - 1;
+                                    *c14_ptr = c14 - 1;
+                                    throttle = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (throttle) {
+                g_minor_skip_bitmap[word_idx].fetch_or(bit_mask, std::memory_order_relaxed);
+                g_minor_ai_skipped.fetch_add(1, std::memory_order_relaxed);
+                return;
+            } else {
+                g_minor_skip_bitmap[word_idx].fetch_and(~bit_mask, std::memory_order_relaxed);
+            }
+        }
+    }
+    g_minor_ai_executed.fetch_add(1, std::memory_order_relaxed);
+    orig(self, a1, a2);
+}
+
+extern "C" void hook_country_ai_pass2(uint8_t* self, uintptr_t a1, uintptr_t a2) {
+    if (self != nullptr && self[0x60] != 0) {
+        uint8_t* country = get_country_from_ai(self);
+        if (country != nullptr) {
+            uint32_t tag_id = *reinterpret_cast<const uint32_t*>(country + OFF_COUNTRY_TAG_ID);
+            size_t bit_idx = static_cast<size_t>(tag_id) & 511U;
+            uint64_t word = g_minor_skip_bitmap[bit_idx >> 6].load(std::memory_order_relaxed);
+            if ((word & (1ULL << (bit_idx & 63U))) != 0ULL) {
+                g_minor_ai_skipped.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
+    reinterpret_cast<CountryAiPassFn>(
+        g_orig_country_ai_pass2.load(std::memory_order_relaxed)
+    )(self, a1, a2);
+}
+
+// ============================================================================
+// 10. CScopedTimer Hooks (0x25554d0 / 0x2555c20) — Zone Profiler & Hour Counter
+//     CRITICAL MSVC x64 ABI: Constructor MUST return `this` in %rax!
+// ============================================================================
+static void record_zone(uintptr_t name_ptr, uint64_t elapsed_ns) {
+    if (name_ptr == 0) {
+        return;
+    }
+    uintptr_t hourly_ptr = g_hourly_ptr.load(std::memory_order_relaxed);
+    if (hourly_ptr == 0) {
+        if (std::strcmp(reinterpret_cast<const char*>(name_ptr), "gamestate.hourly") == 0) {
+            g_hourly_ptr.store(name_ptr, std::memory_order_relaxed);
+            hourly_ptr = name_ptr;
+        }
+    }
+
+    if (name_ptr == hourly_ptr) {
+        uint64_t h = g_total_hours.fetch_add(1, std::memory_order_relaxed) + 1;
+        uint64_t max_hours = g_bench_max_hours.load(std::memory_order_relaxed);
+        if (max_hours > 0) {
+            uint64_t warmup = g_bench_warmup_hours.load(std::memory_order_relaxed);
+            if (h == warmup + 1) {
+                reset_stats();
+                g_bench_start_cpu_ns.store(now_cpu_ns(), std::memory_order_relaxed);
+                g_bench_start_ns.store(now_ns(), std::memory_order_relaxed);
+                g_bench_recording.store(true, std::memory_order_release);
+            } else if (h >= warmup + max_hours) {
+                if (!g_report_emitted.exchange(true, std::memory_order_acq_rel)) {
+                    g_bench_recording.store(false, std::memory_order_release);
+                    emit_report(max_hours);
+                    TerminateProcess(GetCurrentProcess(), 0);
+                }
+            }
+        } else if (g_collect_zones.load(std::memory_order_relaxed) &&
+                   !g_profile_started_sim.exchange(true, std::memory_order_acq_rel)) {
+            reset_stats();
+            g_bench_start_cpu_ns.store(now_cpu_ns(), std::memory_order_relaxed);
+            g_bench_start_ns.store(now_ns(), std::memory_order_relaxed);
+            g_bench_recording.store(true, std::memory_order_release);
+        }
+    }
+
+    if (!g_collect_zones.load(std::memory_order_relaxed)) {
+        return;
+    }
+    if (g_bench_max_hours.load(std::memory_order_relaxed) > 0 &&
+        !g_bench_recording.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    bool is_main = (GetCurrentThreadId() == g_main_tid);
+    size_t idx = hash_uintptr(name_ptr) & (ZONE_CAP - 1);
+    for (size_t probe = 0; probe < 64; ++probe) {
+        ZoneSlot& slot = g_zones[idx];
+        uintptr_t existing = slot.name_ptr.load(std::memory_order_acquire);
+        uintptr_t zero = 0;
+        if (existing == name_ptr ||
+            (existing == 0 &&
+             slot.name_ptr.compare_exchange_strong(
+                 zero, name_ptr, std::memory_order_acq_rel, std::memory_order_acquire))) {
+            slot.calls.fetch_add(1, std::memory_order_relaxed);
+            slot.total_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+            if (is_main) {
+                slot.main_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+            } else {
+                slot.worker_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+            }
+            uint64_t cur_max = slot.max_ns.load(std::memory_order_relaxed);
+            while (elapsed_ns > cur_max &&
+                   !slot.max_ns.compare_exchange_weak(
+                       cur_max, elapsed_ns, std::memory_order_relaxed, std::memory_order_relaxed)) {
+            }
+            return;
+        }
+        idx = (idx + 1) & (ZONE_CAP - 1);
+    }
+}
+
+extern "C" uint64_t* hook_scoped_timer_ctor(uint64_t* self, const char* name) {
+    self[0] = reinterpret_cast<uintptr_t>(name);
+    self[1] = 0;
+    self[2] = g_collect_zones.load(std::memory_order_relaxed) ? now_ns() : 0;
+    self[3] = 0;
+    return self;
+}
+
+extern "C" void hook_scoped_timer_dtor(uint64_t* self) {
+    auto name_ptr = static_cast<uintptr_t>(self[0]);
+    uint64_t start_ns = self[2];
+    if (start_ns != UINT64_MAX && name_ptr != 0) {
+        uint64_t elapsed = 0;
+        if (g_collect_zones.load(std::memory_order_relaxed)) {
+            uint64_t now = now_ns();
+            elapsed = (now > start_ns) ? (now - start_ns) : 0;
+        }
+        record_zone(name_ptr, elapsed);
+    }
+}
+
+// ============================================================================
+// 11. Profiler Report Formatter & Configuration Reader (.ini + Env Vars)
+// ============================================================================
+struct ZoneRow {
+    const char* name;
+    uint64_t calls;
+    uint64_t total;
+    uint64_t main_ns;
+    uint64_t worker_ns;
+};
+
+static void emit_report(uint64_t measured_hours) {
+    uint64_t end_ns = now_ns();
+    uint64_t start_ns = g_bench_start_ns.load(std::memory_order_relaxed);
+    uint64_t wall_ns = (end_ns > start_ns) ? (end_ns - start_ns) : 1;
+    double wall_s = static_cast<double>(wall_ns) / 1e9;
+    double days = static_cast<double>(measured_hours) / 24.0;
+    double hours_per_sec = static_cast<double>(measured_hours) / wall_s;
+    double days_per_sec = days / wall_s;
+    double ms_per_day = (days > 0.0) ? ((wall_s * 1000.0) / days) : 0.0;
+
+    uint64_t cpu_end = now_cpu_ns();
+    uint64_t cpu_start = g_bench_start_cpu_ns.load(std::memory_order_relaxed);
+    double cpu_s = static_cast<double>((cpu_end > cpu_start) ? (cpu_end - cpu_start) : 0) / 1e9;
+    double active_cores = cpu_s / wall_s;
+
+    SYSTEM_INFO si{};
+    GetNativeSystemInfo(&si);
+
+    ZoneRow rows[ZONE_CAP];
+    size_t n_rows = 0;
+    for (size_t i = 0; i < ZONE_CAP; ++i) {
+        uintptr_t p = g_zones[i].name_ptr.load(std::memory_order_acquire);
+        uint64_t calls = g_zones[i].calls.load(std::memory_order_relaxed);
+        if (p == 0 || calls == 0) {
+            continue;
+        }
+        rows[n_rows++] = ZoneRow{
+            reinterpret_cast<const char*>(p),
+            calls,
+            g_zones[i].total_ns.load(std::memory_order_relaxed),
+            g_zones[i].main_ns.load(std::memory_order_relaxed),
+            g_zones[i].worker_ns.load(std::memory_order_relaxed),
+        };
+    }
+    // Simple selection sort for top 25 zones (zero STL heap/exceptions)
+    size_t top_n = (n_rows < 25) ? n_rows : 25;
+    for (size_t i = 0; i < top_n; ++i) {
+        size_t best = i;
+        for (size_t j = i + 1; j < n_rows; ++j) {
+            if (rows[j].total > rows[best].total) {
+                best = j;
+            }
+        }
+        if (best != i) {
+            ZoneRow tmp = rows[i];
+            rows[i] = rows[best];
+            rows[best] = tmp;
+        }
+    }
+
+    char buf[16384];
+    int pos = 0;
+    auto put = [&](const char* fmt, ...) {
+        if (pos >= static_cast<int>(sizeof(buf)) - 256) {
+            return;
+        }
+        va_list ap;
+        va_start(ap, fmt);
+        int n = std::vsnprintf(buf + pos, sizeof(buf) - static_cast<size_t>(pos), fmt, ap);
+        va_end(ap);
+        if (n > 0) {
+            pos += (pos + n < static_cast<int>(sizeof(buf)))
+                       ? n
+                       : (static_cast<int>(sizeof(buf)) - 1 - pos);
+        }
+    };
+
+    uint64_t tf_ns = g_target_frame_ns.load(std::memory_order_relaxed);
+    uint64_t tf_fps = (tf_ns > 0) ? (1000000000ULL / tf_ns) : 0;
+    uint64_t sf_fps = g_smooth_fps.load(std::memory_order_relaxed);
+
+    put("\r\n================ HOI4 ACCEL v1.0-win64 REPORT ================\r\n");
+    put("Measured Hours : %llu (%.2f game days)\r\n",
+        static_cast<unsigned long long>(measured_hours), days);
+    put("Wall Time      : %.3f s\r\n", wall_s);
+    put("Throughput     : %.2f hours/s  |  %.2f days/s  |  %.2f ms/day\r\n",
+        hours_per_sec, days_per_sec, ms_per_day);
+    put("CPU Utilization: %.2fs CPU in %.2fs wall  =>  %.2f active cores (of %lu logical)\r\n",
+        cpu_s, wall_s, active_cores, static_cast<unsigned long>(si.dwNumberOfProcessors));
+    put("Config         : target_fps=%llu smooth_fps=%llu fast_alloc=%d fast_mod=%d country_grain=%d civil_war_fix=%d ai_smart_supply=%d ai_throttle_minors=%d fast_sched=%d fast_wait=%d fast_yield=%d no_job_clock=%d affinity=%d quiet_log=%d fast_save=%d no_telemetry=%d\r\n",
+        static_cast<unsigned long long>(tf_fps),
+        static_cast<unsigned long long>(sf_fps),
+        g_fast_alloc_enabled.load() ? 1 : 0,
+        g_fast_mod_enabled.load() ? 1 : 0,
+        g_country_grain_enabled.load() ? 1 : 0,
+        g_civil_war_fix_enabled.load() ? 1 : 0,
+        g_ai_smart_supply_enabled.load() ? 1 : 0,
+        g_ai_throttle_minors_enabled.load() ? 1 : 0,
+        g_fast_sched_enabled.load() ? 1 : 0,
+        g_fast_wait_enabled.load() ? 1 : 0,
+        g_fast_yield_enabled.load() ? 1 : 0,
+        g_no_job_clock_enabled.load() ? 1 : 0,
+        g_affinity_enabled.load() ? 1 : 0,
+        g_quiet_log_enabled.load() ? 1 : 0,
+        g_fast_save_enabled.load() ? 1 : 0,
+        g_no_telemetry_enabled.load() ? 1 : 0);
+
+    if (g_orig_update_one_frame.load() != 0) {
+        uint64_t r = g_frames_rendered.load(std::memory_order_relaxed);
+        uint64_t extra = g_burst_extra_ticks.load(std::memory_order_relaxed);
+        double worst_ms = static_cast<double>(g_worst_frame_ns.load(std::memory_order_relaxed)) / 1e6;
+        double ema_r_ms = static_cast<double>(g_ema_render_ns.load(std::memory_order_relaxed)) / 1e6;
+        put("Frame Pacing   : %llu frames (%.1f FPS) | worst_frame=%.1f ms | avg_render=%.1f ms | extra_ticks=%llu\r\n",
+            static_cast<unsigned long long>(r),
+            static_cast<double>(r) / wall_s,
+            worst_ms,
+            ema_r_ms,
+            static_cast<unsigned long long>(extra));
+
+        uint64_t act_f = g_active_sim_frames.load(std::memory_order_relaxed);
+        uint64_t act_ns = g_active_sim_ns.load(std::memory_order_relaxed);
+        if (act_f > 0 && act_ns > 0) {
+            double act_s = static_cast<double>(act_ns) / 1e9;
+            put("Unpaused Sim   : %llu frames in %.2fs => %.1f FPS | %.2f days/s active\r\n",
+                static_cast<unsigned long long>(act_f),
+                act_s,
+                static_cast<double>(act_f) / act_s,
+                days / act_s);
+        }
+    }
+    if (sf_fps > 0) {
+        put("Anti-Freeze    : smooth_fps=%llu | mid_tick_checks=%llu (fast_skipped=%llu) | mid_tick_renders=%llu\r\n",
+            static_cast<unsigned long long>(sf_fps),
+            static_cast<unsigned long long>(g_mid_tick_checks.load()),
+            static_cast<unsigned long long>(g_mid_tick_fast_skip.load()),
+            static_cast<unsigned long long>(g_mid_tick_renders.load()));
+    }
+    if (g_fast_sched_enabled.load() || g_fast_yield_enabled.load()) {
+        put("FastSched      : %llu zero-lock watcher polls | %llu SwitchToThread syscalls elided\r\n",
+            static_cast<unsigned long long>(g_sched_watcher_polls.load()),
+            static_cast<unsigned long long>(g_yield_elided.load()));
+    }
+    if (g_quiet_log_enabled.load()) {
+        put("QuietLog       : %llu allowed | %llu spam lines suppressed\r\n",
+            static_cast<unsigned long long>(g_log_allowed.load()),
+            static_cast<unsigned long long>(g_log_suppressed.load()));
+    }
+    if (g_fast_save_enabled.load()) {
+        put("FastSave       : %llu blocking FlushFileBuffers() stalls eliminated\r\n",
+            static_cast<unsigned long long>(g_fsync_skipped.load()));
+    }
+    if (g_no_telemetry_enabled.load()) {
+        put("NoTelemetry    : %llu SDK telemetry payloads suppressed cleanly\r\n",
+            static_cast<unsigned long long>(g_telemetry_blocked.load()));
+    }
+    if (g_fast_mod_enabled.load()) {
+        put("FastModifier   : Branchless CMOV binary search active\r\n");
+    }
+    if (g_country_grain_enabled.load()) {
+        put("CountryGrain   : %llu/%llu dispatches rebalanced (17..=220 -> chunk=1)\r\n",
+            static_cast<unsigned long long>(g_parfor_rebalanced.load()),
+            static_cast<unsigned long long>(g_parfor_total.load()));
+    }
+    if (g_fast_alloc_enabled.load()) {
+        double used_mb = static_cast<double>(g_slab_bump_off.load()) / (1024.0 * 1024.0);
+        put("FastAlloc      : %llu slab allocs | %llu slab frees | %llu >512B fallbacks | %.1f/128.0 MB committed\r\n",
+            static_cast<unsigned long long>(g_slab_alloc_hits.load()),
+            static_cast<unsigned long long>(g_slab_free_hits.load()),
+            static_cast<unsigned long long>(g_slab_fallbacks.load()),
+            used_mb);
+    }
+    if (g_civil_war_fix_enabled.load()) {
+        put("CivilWarFix    : %llu redundant mid-split map/supply rebuilds coalesced\r\n",
+            static_cast<unsigned long long>(g_cw_rebuilds_coalesced.load()));
+    }
+    if (g_ai_throttle_minors_enabled.load()) {
+        put("MinorAIThrot   : %llu peaceful minor sub-passes skipped | %llu active AI passes executed\r\n",
+            static_cast<unsigned long long>(g_minor_ai_skipped.load()),
+            static_cast<unsigned long long>(g_minor_ai_executed.load()));
+    }
+
+    put("\r\n--- Top Profiler Zones ---\r\n");
+    put("%-44s %8s %9s %8s %9s %9s %7s\r\n",
+        "Zone", "Calls", "Total ms", "Avg us", "Main ms", "Work ms", "%Wall");
+    for (size_t i = 0; i < top_n; ++i) {
+        char zname[45] = {0};
+        std::snprintf(zname, sizeof(zname), "%.44s", rows[i].name);
+        double total_ms = static_cast<double>(rows[i].total) / 1e6;
+        double avg_us = (static_cast<double>(rows[i].total) / static_cast<double>(rows[i].calls)) / 1e3;
+        double main_ms = static_cast<double>(rows[i].main_ns) / 1e6;
+        double work_ms = static_cast<double>(rows[i].worker_ns) / 1e6;
+        double pct_wall = (main_ms / (wall_s * 1000.0)) * 100.0;
+        put("%-44s %8llu %9.2f %8.1f %9.2f %9.2f %6.1f%%\r\n",
+            zname,
+            static_cast<unsigned long long>(rows[i].calls),
+            total_ms,
+            avg_us,
+            main_ms,
+            work_ms,
+            pct_wall);
+    }
+    put("==============================================================\r\n");
+
+    append_log_line(buf, false);
+}
+
+static bool get_cfg_str(const char* env_key, const wchar_t* ini_key, char* out, size_t cap) {
+    char env_buf[128] = {0};
+    DWORD n = GetEnvironmentVariableA(env_key, env_buf, static_cast<DWORD>(sizeof(env_buf)));
+    if (n > 0 && n < sizeof(env_buf)) {
+        size_t copy_len = (n < cap - 1) ? static_cast<size_t>(n) : (cap - 1);
+        std::memcpy(out, env_buf, copy_len);
+        out[copy_len] = '\0';
+        return true;
+    }
+    if (g_ini_path[0] != L'\0') {
+        wchar_t wbuf[128] = {0};
+        DWORD wn = GetPrivateProfileStringW(L"hoi4_accel", ini_key, L"", wbuf, 127, g_ini_path);
+        if (wn > 0) {
+            // Strip inline ';' or '#' comments and trailing spaces
+            size_t j = 0;
+            for (DWORD i = 0; i < wn && j + 1 < cap; ++i) {
+                wchar_t wc = wbuf[i];
+                if (wc == L';' || wc == L'#') {
+                    break;
+                }
+                out[j++] = static_cast<char>(wc & 0x7f);
+            }
+            while (j > 0 && (out[j - 1] == ' ' || out[j - 1] == '\t')) {
+                --j;
+            }
+            out[j] = '\0';
+            if (j > 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool get_cfg_bool(const char* env_key, const wchar_t* ini_key, bool def_val) {
+    char val[64] = {0};
+    if (!get_cfg_str(env_key, ini_key, val, sizeof(val))) {
+        return def_val;
+    }
+    if (std::strcmp(val, "1") == 0 || _stricmp(val, "true") == 0 || _stricmp(val, "on") == 0) {
+        return true;
+    }
+    if (std::strcmp(val, "0") == 0 || _stricmp(val, "false") == 0 || _stricmp(val, "off") == 0) {
+        return false;
+    }
+    return def_val;
+}
+
+static uint64_t get_cfg_u64(const char* env_key, const wchar_t* ini_key, uint64_t def_val) {
+    char val[64] = {0};
+    if (!get_cfg_str(env_key, ini_key, val, sizeof(val))) {
+        return def_val;
+    }
+    char* endp = nullptr;
+    unsigned long long parsed = std::strtoull(val, &endp, 10);
+    return (endp != val) ? static_cast<uint64_t>(parsed) : def_val;
+}
+
+static void maybe_emit_exit_report() {
+    if (!g_active_for_hoi4.load(std::memory_order_relaxed)) {
+        return;
+    }
+    if (g_bench_max_hours.load(std::memory_order_relaxed) == 0 &&
+        g_collect_zones.load(std::memory_order_relaxed)) {
+        uint64_t h = g_total_hours.load(std::memory_order_relaxed);
+        if (h > 0 && !g_report_emitted.exchange(true, std::memory_order_acq_rel)) {
+            g_bench_recording.store(false, std::memory_order_release);
+            emit_report(h);
+        }
+    }
+}
+
+// ============================================================================
+// 12. Initialization for hoi4.exe & DllMain Entry Point
+// ============================================================================
+static void hoi4_accel_init(HINSTANCE hinst_dll) {
+    wchar_t exe_path[MAX_PATH] = {0};
+    DWORD n_exe = GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    if (n_exe == 0 || n_exe >= MAX_PATH) {
+        return;
+    }
+    const wchar_t* base_name = std::wcsrchr(exe_path, L'\\');
+    base_name = base_name ? (base_name + 1) : exe_path;
+    if (_wcsicmp(base_name, L"hoi4.exe") != 0) {
+        // Not hoi4.exe (e.g. dowser.exe or crashreporter.exe) -> pure version.dll passthrough!
+        return;
+    }
+
+    // Resolve paths next to version.dll / hoi4.exe
+    wchar_t dir_path[MAX_PATH] = {0};
+    if (GetModuleFileNameW(hinst_dll, dir_path, MAX_PATH) > 0) {
+        wchar_t* slash = std::wcsrchr(dir_path, L'\\');
+        if (slash) {
+            *slash = L'\0';
+            std::swprintf(g_ini_path, MAX_PATH, L"%ls\\hoi4_accel.ini", dir_path);
+            std::swprintf(g_log_path, MAX_PATH, L"%ls\\hoi4_accel.log", dir_path);
+        }
+    }
+    wchar_t env_log[MAX_PATH] = {0};
+    DWORD n_env_log = GetEnvironmentVariableW(L"HOI4_ACCEL_LOG", env_log, MAX_PATH);
+    if (n_env_log > 0 && n_env_log < MAX_PATH) {
+        std::memcpy(g_log_path, env_log, (n_env_log + 1) * sizeof(wchar_t));
+    }
+
+    LARGE_INTEGER freq{};
+    if (QueryPerformanceFrequency(&freq) && freq.QuadPart > 0) {
+        g_qpc_freq = static_cast<uint64_t>(freq.QuadPart);
+    }
+
+    g_exe_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    g_main_tid = GetCurrentThreadId();
+    g_tls_yield_idx = TlsAlloc();
+    g_tls_slab_idx = TlsAlloc();
+    g_active_for_hoi4.store(true, std::memory_order_release);
+
+    if (std::strcmp(
+            reinterpret_cast<const char*>(g_exe_base + RVA_STR_GAMESTATE_HOURLY),
+            "gamestate.hourly") == 0) {
+        g_hourly_ptr.store(g_exe_base + RVA_STR_GAMESTATE_HOURLY, std::memory_order_relaxed);
+    }
+
+    bool noop_mode = get_cfg_bool("HOI4_ACCEL_NOOP", L"noop", false);
+    char preset[32] = "smooth";
+    if (noop_mode) {
+        std::strcpy(preset, "none");
+    } else {
+        get_cfg_str("HOI4_ACCEL_PRESET", L"preset", preset, sizeof(preset));
+        for (char* p = preset; *p; ++p) {
+            *p = static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
+        }
+    }
+
+    uint64_t def_fps = 0;
+    uint64_t def_smooth = 0;
+    bool def_core = false;
+    if (std::strcmp(preset, "smooth") == 0) {
+        def_fps = 26;
+        def_smooth = 30;
+        def_core = true;
+    } else if (std::strcmp(preset, "balanced") == 0) {
+        def_fps = 14;
+        def_smooth = 14;
+        def_core = true;
+    } else if (std::strcmp(preset, "turbo") == 0) {
+        def_fps = 6;
+        def_smooth = 6;
+        def_core = true;
+    } else if (std::strcmp(preset, "pure") == 0) {
+        def_fps = 0;
+        def_smooth = 30;
+        def_core = true;
+    }
+
+    char hdr[512];
+    std::snprintf(
+        hdr,
+        sizeof(hdr),
+        "[hoi4-accel v1.0-win64] Attached to hoi4.exe (pid=%lu, base=0x%llx, preset=%s)\r\n",
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long long>(g_exe_base),
+        preset
+    );
+    append_log_line(hdr, true);
+
+    bool want_ai_smart_supply = !noop_mode &&
+                                get_cfg_bool("HOI4_ACCEL_AI_SMART_SUPPLY", L"ai_smart_supply", def_core);
+    if (want_ai_smart_supply) {
+        g_ai_smart_supply_enabled.store(true, std::memory_order_release);
+    }
+
+    bool need_scoped_timer = false;
+    uint64_t bench_hours = get_cfg_u64("HOI4_BENCH_HOURS", L"bench_hours", 0);
+    if (bench_hours > 0) {
+        g_bench_max_hours.store(bench_hours, std::memory_order_relaxed);
+        g_bench_warmup_hours.store(
+            get_cfg_u64("HOI4_BENCH_WARMUP", L"bench_warmup", 24),
+            std::memory_order_relaxed
+        );
+        g_collect_zones.store(true, std::memory_order_relaxed);
+        need_scoped_timer = true;
+    }
+    if (get_cfg_bool("HOI4_ACCEL_PROFILE", L"profile", false)) {
+        g_collect_zones.store(true, std::memory_order_relaxed);
+        g_bench_start_ns.store(now_ns(), std::memory_order_relaxed);
+        g_bench_start_cpu_ns.store(now_cpu_ns(), std::memory_order_relaxed);
+        g_bench_recording.store(true, std::memory_order_release);
+        need_scoped_timer = true;
+    }
+
+    // 1. Frame tracker + Render-Aware Multi-Tick Speed-5 Bursting (also drives lazy AI Smart Supply init)
+    uint64_t target_fps = noop_mode ? 0 : get_cfg_u64("HOI4_ACCEL_TARGET_FPS", L"target_fps", def_fps);
+    bool need_frame_hooks = (target_fps >= 1 && target_fps <= 240) ||
+                            bench_hours > 0 ||
+                            g_collect_zones.load(std::memory_order_relaxed) ||
+                            want_ai_smart_supply;
+    if (need_frame_hooks) {
+        uint64_t max_burst = get_cfg_u64("HOI4_ACCEL_MAX_BURST", L"max_burst", 16);
+        if (max_burst < 1) max_burst = 1;
+        if (max_burst > 64) max_burst = 64;
+        g_max_burst_ticks.store(max_burst, std::memory_order_relaxed);
+
+        uintptr_t tramp_frame = install_trampoline_hook(
+            g_exe_base + RVA_UPDATE_ONE_FRAME,
+            SIG_UPDATE_ONE_FRAME,
+            sizeof(SIG_UPDATE_ONE_FRAME),
+            reinterpret_cast<uintptr_t>(&hook_update_one_frame)
+        );
+        if (tramp_frame != 0) {
+            g_orig_update_one_frame.store(tramp_frame, std::memory_order_release);
+        }
+
+        if (verify_sig(g_exe_base + RVA_GAMESTATE_TICK_CLOCK, SIG_TICK_CLOCK, sizeof(SIG_TICK_CLOCK))) {
+            uintptr_t tramp_sess = install_trampoline_hook(
+                g_exe_base + RVA_SESSION_UPDATE,
+                SIG_SESSION_UPDATE,
+                sizeof(SIG_SESSION_UPDATE),
+                reinterpret_cast<uintptr_t>(&hook_session_update)
+            );
+            if (tramp_sess != 0) {
+                g_orig_session_update.store(tramp_sess, std::memory_order_release);
+                uint64_t frame_ns = (target_fps >= 1 && target_fps <= 240)
+                                        ? (1000000000ULL / target_fps)
+                                        : 0;
+                g_target_frame_ns.store(frame_ns, std::memory_order_release);
+                if (frame_ns > 0) {
+                    need_scoped_timer = true;
+                    char msg[256];
+                    std::snprintf(
+                        msg, sizeof(msg),
+                        "[hoi4-accel] Enabled Render-Aware Speed-5 Bursting (target=%llu FPS, max_burst=%llu)\r\n",
+                        static_cast<unsigned long long>(target_fps),
+                        static_cast<unsigned long long>(max_burst)
+                    );
+                    append_log_line(msg);
+                }
+            } else {
+                append_log_line("[hoi4-accel] SKIPPED SessionUpdate hook (signature mismatch)\r\n");
+            }
+        }
+    }
+
+    // 2. Mid-Tick Anti-Freeze Frame Pacer (ShouldRenderMidTick @ 0x2bacd0)
+    uint64_t smooth_fps = noop_mode ? 0 : get_cfg_u64("HOI4_ACCEL_SMOOTH_FPS", L"smooth_fps", def_smooth);
+    if (smooth_fps >= 1 && smooth_fps <= 240) {
+        if (verify_sig(
+                g_exe_base + RVA_SHOULD_RENDER_MIDTICK,
+                SIG_SHOULD_RENDER_MIDTICK,
+                sizeof(SIG_SHOULD_RENDER_MIDTICK)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_SHOULD_RENDER_MIDTICK,
+                reinterpret_cast<uintptr_t>(&hook_should_render_mid_tick))) {
+            g_smooth_fps.store(smooth_fps, std::memory_order_release);
+            char msg[256];
+            std::snprintf(
+                msg, sizeof(msg),
+                "[hoi4-accel] Enabled Mid-Tick Anti-Freeze Frame Pacer (smooth=%llu FPS, camera=60 FPS)\r\n",
+                static_cast<unsigned long long>(smooth_fps)
+            );
+            append_log_line(msg);
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED ShouldRenderMidTick hook (signature mismatch)\r\n");
+        }
+    }
+
+    // 3. CScopedTimer hooks (required for hour tracking in Speed-5 bursting or profiling)
+    if (need_scoped_timer) {
+        if (verify_sig(
+                g_exe_base + RVA_SCOPED_TIMER_CTOR,
+                SIG_SCOPED_TIMER_CTOR,
+                sizeof(SIG_SCOPED_TIMER_CTOR)) &&
+            verify_sig(
+                g_exe_base + RVA_SCOPED_TIMER_DTOR,
+                SIG_SCOPED_TIMER_DTOR,
+                sizeof(SIG_SCOPED_TIMER_DTOR)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_SCOPED_TIMER_CTOR,
+                reinterpret_cast<uintptr_t>(&hook_scoped_timer_ctor)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_SCOPED_TIMER_DTOR,
+                reinterpret_cast<uintptr_t>(&hook_scoped_timer_dtor))) {
+            append_log_line("[hoi4-accel] Installed CScopedTimer ctor/dtor hooks\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED CScopedTimer hooks (signature mismatch)\r\n");
+        }
+    }
+
+    // 4. Lock-free Zero-Bounce Worker Scheduler (PopTaskOrWait @ 0x255d2a0)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_FAST_SCHED", L"fast_sched", def_core)) {
+        if (verify_sig(
+                g_exe_base + RVA_POP_TASK_OR_WAIT,
+                SIG_POP_TASK_OR_WAIT,
+                sizeof(SIG_POP_TASK_OR_WAIT)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_POP_TASK_OR_WAIT,
+                reinterpret_cast<uintptr_t>(&hook_pop_task_or_wait))) {
+            g_fast_sched_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled FastSched (zero-bounce PopTaskOrWait @ 0x255d2a0)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED FastSched (signature mismatch)\r\n");
+        }
+    }
+
+    // Capture original SwitchToThread IAT pointer before patching FastWait / FastYield
+    g_orig_switch_to_thread.store(
+        *reinterpret_cast<const uintptr_t*>(g_exe_base + RVA_IAT_SWITCH_TO_THREAD),
+        std::memory_order_release
+    );
+
+    // 5. FastWait (CTask::SpinWait @ 0x255afb0)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_FAST_WAIT", L"fast_wait", def_core)) {
+        if (verify_sig(g_exe_base + RVA_TASK_WAIT, SIG_TASK_WAIT, sizeof(SIG_TASK_WAIT)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_TASK_WAIT,
+                reinterpret_cast<uintptr_t>(&hook_task_wait))) {
+            g_fast_wait_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled FastWait (lock-free CTask::SpinWait @ 0x255afb0)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED FastWait (signature mismatch)\r\n");
+        }
+    }
+
+    // 6. FastYield (SwitchToThread IAT @ 0x27892c0, verified by thunk @ 0x25a6e48)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_FAST_YIELD", L"fast_yield", def_core)) {
+        if (verify_sig(
+                g_exe_base + RVA_SWITCH_TO_THREAD_THUNK,
+                SIG_SWITCH_TO_THREAD_THUNK,
+                sizeof(SIG_SWITCH_TO_THREAD_THUNK)) &&
+            patch_data_ptr(
+                g_exe_base + RVA_IAT_SWITCH_TO_THREAD,
+                reinterpret_cast<uintptr_t>(&hook_switch_to_thread))) {
+            g_fast_yield_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled FastYield (SwitchToThread kernel-trap storm elided)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED FastYield (signature mismatch)\r\n");
+        }
+    }
+
+    // 7. NoJobClock (strip per-microjob clock + lock add in ExecuteTask)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_NO_JOB_CLOCK", L"no_job_clock", def_core)) {
+        uint8_t nops49[49];
+        std::memset(nops49, 0x90, sizeof(nops49));
+        if (verify_sig(g_exe_base + RVA_EXEC_TASK_NOW1, SIG_EXEC_TASK_NOW1, sizeof(SIG_EXEC_TASK_NOW1)) &&
+            verify_sig(g_exe_base + RVA_EXEC_TASK_NOW2, SIG_EXEC_TASK_NOW2, sizeof(SIG_EXEC_TASK_NOW2)) &&
+            verify_sig(
+                g_exe_base + RVA_EXEC_TASK_LOCKADD_END,
+                SIG_EXEC_TASK_LOCKADD_END,
+                sizeof(SIG_EXEC_TASK_LOCKADD_END)) &&
+            patch_bytes(g_exe_base + RVA_EXEC_TASK_NOW1, nops49, 5) &&
+            patch_bytes(g_exe_base + RVA_EXEC_TASK_NOW2, nops49, 49)) {
+            g_no_job_clock_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled NoJobClock (stripped ExecuteTask per-job clocks + lock add)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED NoJobClock (signature mismatch)\r\n");
+        }
+    }
+
+    // 8. Topology-Aware CPU Core Pinning (WorkerThreadInit @ 0x255a110)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_AFFINITY", L"affinity", def_core)) {
+        if (init_cpu_topology() &&
+            verify_sig(
+                g_exe_base + RVA_WORKER_THREAD_INIT,
+                SIG_WORKER_THREAD_INIT,
+                sizeof(SIG_WORKER_THREAD_INIT)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_WORKER_THREAD_INIT,
+                reinterpret_cast<uintptr_t>(&hook_worker_thread_init))) {
+            g_affinity_enabled.store(true, std::memory_order_release);
+            SetThreadAffinityMask(GetCurrentThread(), 1ULL);
+            char msg[256];
+            std::snprintf(
+                msg, sizeof(msg),
+                "[hoi4-accel] Enabled Topology Core Pinning (main=CPU0, %zu worker slots, %zu bg slots)\r\n",
+                g_topo_worker_len, g_topo_bg_len
+            );
+            append_log_line(msg);
+        } else {
+            append_log_line("[hoi4-accel] Affinity left to Windows OS scheduler (hybrid or unsupported layout)\r\n");
+        }
+    }
+
+    // 9. QuietLog (SetLogger @ 0x2550050 + MSVC std::string deduplicator)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_QUIET_LOG", L"quiet_log", def_core)) {
+        if (verify_sig(g_exe_base + RVA_SET_LOGGER, SIG_SET_LOGGER, sizeof(SIG_SET_LOGGER)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_SET_LOGGER,
+                reinterpret_cast<uintptr_t>(&hook_set_logger))) {
+            auto* cur_logger = *reinterpret_cast<uint8_t* const*>(g_exe_base + RVA_G_LOGGER_PTR);
+            if (cur_logger) {
+                wrap_logger_vtable(cur_logger);
+            }
+            g_quiet_log_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled QuietLog (lock-free error.log spam deduplicator)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED QuietLog (signature mismatch)\r\n");
+        }
+    }
+
+    // 10. FastSave (CFile::Flush @ 0x259d9e0)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_FAST_SAVE", L"fast_save", def_core)) {
+        if (verify_sig(g_exe_base + RVA_FILE_FLUSH, SIG_FILE_FLUSH, sizeof(SIG_FILE_FLUSH)) &&
+            install_abs_jmp(
+                g_exe_base + RVA_FILE_FLUSH,
+                reinterpret_cast<uintptr_t>(&hook_fast_flush))) {
+            g_fast_save_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled FastSave (skipped blocking FlushFileBuffers stalls)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED FastSave (signature mismatch)\r\n");
+        }
+    }
+
+    // 11. NoTelemetry (IAT QueueAndSendTelemetry @ 0x2789a90 with MSVC payload dtor)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_NO_TELEMETRY", L"no_telemetry", def_core)) {
+        if (verify_sig(
+                g_exe_base + RVA_TELEMETRY_CALL,
+                SIG_TELEMETRY_CALL,
+                sizeof(SIG_TELEMETRY_CALL)) &&
+            patch_data_ptr(
+                g_exe_base + RVA_IAT_QUEUE_TELEMETRY,
+                reinterpret_cast<uintptr_t>(&hook_queue_and_send_telemetry))) {
+            g_no_telemetry_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled NoTelemetry (Paradox SDK telemetry disabled cleanly)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED NoTelemetry (signature mismatch)\r\n");
+        }
+    }
+
+    // 12. CountryGrain (CPdxParallelForRange::Init @ 0x2576ac0)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_COUNTRY_GRAIN", L"country_grain", def_core)) {
+        uintptr_t tramp_pf = install_trampoline_hook(
+            g_exe_base + RVA_PARFOR_RANGE_INIT,
+            SIG_PARFOR_RANGE_INIT,
+            sizeof(SIG_PARFOR_RANGE_INIT),
+            reinterpret_cast<uintptr_t>(&hook_parfor_range_init)
+        );
+        if (tramp_pf != 0) {
+            g_orig_parfor_range_init.store(tramp_pf, std::memory_order_release);
+            g_country_grain_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled CountryGrain (17..=220 -> chunk=1 @ 0x2576ac0)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED CountryGrain (signature mismatch)\r\n");
+        }
+    }
+
+    // 13. FastModifier (Branchless CMOV CModifier::GetValue @ 0x5a63d0)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_FAST_MOD", L"fast_mod", def_core)) {
+        uintptr_t tramp_mod = install_trampoline_hook(
+            g_exe_base + RVA_MODIFIER_GET_VAL,
+            SIG_MODIFIER_GET_VAL,
+            sizeof(SIG_MODIFIER_GET_VAL),
+            reinterpret_cast<uintptr_t>(&hook_modifier_get_value)
+        );
+        if (tramp_mod != 0) {
+            g_orig_modifier_get_val.store(tramp_mod, std::memory_order_release);
+            g_fast_mod_enabled.store(true, std::memory_order_release);
+            append_log_line("[hoi4-accel] Enabled FastModifier (branchless CMOV binary search @ 0x5a63d0)\r\n");
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED FastModifier (signature mismatch)\r\n");
+        }
+    }
+
+    // 14. FastAlloc (128 MB Lock-Free Slab + Win32 TLS Magazine on CPdxNewDeleteAllocator @ 0x2798570)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_FAST_ALLOC", L"fast_alloc", def_core)) {
+        uintptr_t alloc_slot = g_exe_base + RVA_PDX_ALLOC_VT + OFF_PDX_ALLOC_SLOT;
+        uintptr_t free_slot  = g_exe_base + RVA_PDX_ALLOC_VT + OFF_PDX_FREE_SLOT;
+        uintptr_t cur_alloc  = *reinterpret_cast<const uintptr_t*>(alloc_slot);
+        uintptr_t cur_free   = *reinterpret_cast<const uintptr_t*>(free_slot);
+        if (cur_alloc == g_exe_base + RVA_PDX_ALLOC_FN &&
+            cur_free  == g_exe_base + RVA_PDX_FREE_FN &&
+            init_slab_arena()) {
+            g_orig_pdx_alloc.store(cur_alloc, std::memory_order_release);
+            g_orig_pdx_free.store(cur_free, std::memory_order_release);
+            if (patch_data_ptr(alloc_slot, reinterpret_cast<uintptr_t>(&hook_pdx_alloc)) &&
+                patch_data_ptr(free_slot, reinterpret_cast<uintptr_t>(&hook_pdx_free))) {
+                g_fast_alloc_enabled.store(true, std::memory_order_release);
+                append_log_line("[hoi4-accel] Enabled FastAlloc (128 MB lock-free slab + TLS magazine @ 0x2798570)\r\n");
+            }
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED FastAlloc (vtable mismatch or arena error)\r\n");
+        }
+    }
+
+    // 15. CivilWarFix (CCivilWarSetup::Execute @ 0x1169250 + CInGameIdler map rebuild coalescer)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_CIVIL_WAR_FIX", L"civil_war_fix", def_core)) {
+        uintptr_t idler_slot = g_exe_base + RVA_INGAME_IDLER_VT + OFF_IDLER_MAP_REBUILD_SLOT;
+        uintptr_t cur_rebuild = *reinterpret_cast<const uintptr_t*>(idler_slot);
+        if (cur_rebuild == g_exe_base + RVA_IDLER_MAP_REBUILD_FN) {
+            uintptr_t tramp_cw = install_trampoline_hook(
+                g_exe_base + RVA_CW_SETUP_EXEC,
+                SIG_CW_SETUP_EXEC,
+                sizeof(SIG_CW_SETUP_EXEC),
+                reinterpret_cast<uintptr_t>(&hook_cw_setup_exec)
+            );
+            if (tramp_cw != 0) {
+                g_orig_cw_setup_exec.store(tramp_cw, std::memory_order_release);
+                g_orig_idler_map_rebuild.store(cur_rebuild, std::memory_order_release);
+                if (patch_data_ptr(idler_slot, reinterpret_cast<uintptr_t>(&hook_idler_map_rebuild))) {
+                    g_civil_war_fix_enabled.store(true, std::memory_order_release);
+                    append_log_line("[hoi4-accel] Enabled CivilWarFix (coalesced per-state CInGameIdler map/supply rebuilds)\r\n");
+                }
+            } else {
+                append_log_line("[hoi4-accel] SKIPPED CivilWarFix (prologue signature mismatch)\r\n");
+            }
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED CivilWarFix (vtable mismatch)\r\n");
+        }
+    }
+
+    // 16. AiThrottleMinors (CCountryAI @ 0x27b8c20)
+    if (!noop_mode && get_cfg_bool("HOI4_ACCEL_AI_THROTTLE_MINORS", L"ai_throttle_minors", def_core)) {
+        uintptr_t p1_slot = g_exe_base + RVA_COUNTRY_AI_VT + OFF_COUNTRY_AI_PASS1_SLOT;
+        uintptr_t p2_slot = g_exe_base + RVA_COUNTRY_AI_VT + OFF_COUNTRY_AI_PASS2_SLOT;
+        uintptr_t cur_p1  = *reinterpret_cast<const uintptr_t*>(p1_slot);
+        uintptr_t cur_p2  = *reinterpret_cast<const uintptr_t*>(p2_slot);
+        if (cur_p1 == g_exe_base + RVA_COUNTRY_AI_PASS1_FN &&
+            cur_p2 == g_exe_base + RVA_COUNTRY_AI_PASS2_FN) {
+            g_orig_country_ai_pass1.store(cur_p1, std::memory_order_release);
+            g_orig_country_ai_pass2.store(cur_p2, std::memory_order_release);
+            if (patch_data_ptr(p1_slot, reinterpret_cast<uintptr_t>(&hook_country_ai_pass1)) &&
+                patch_data_ptr(p2_slot, reinterpret_cast<uintptr_t>(&hook_country_ai_pass2))) {
+                g_ai_throttle_minors_enabled.store(true, std::memory_order_release);
+                append_log_line("[hoi4-accel] Enabled AiThrottleMinors (staggered 4h cadence for peaceful <12-state non-major AI minors)\r\n");
+            }
+        } else {
+            append_log_line("[hoi4-accel] SKIPPED AiThrottleMinors (vtable mismatch)\r\n");
+        }
+    }
+
+    std::atexit(&maybe_emit_exit_report);
+}
+
+extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/) {
+    if (fdwReason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hinstDLL);
+        load_system_version_dll();
+        hoi4_accel_init(hinstDLL);
+    } else if (fdwReason == DLL_PROCESS_DETACH) {
+        maybe_emit_exit_report();
+    }
+    return TRUE;
+}
