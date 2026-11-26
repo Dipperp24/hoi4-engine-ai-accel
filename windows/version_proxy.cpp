@@ -1,5 +1,5 @@
 // ============================================================================
-// hoi4-accel v1.3-win64: Non-Destructive Windows x86_64 Engine & AI Accelerator
+// hoi4-accel v1.4-win64: Non-Destructive Windows x86_64 Engine & AI Accelerator
 // Target: Hearts of Iron IV v1.20.0.0.8873 (Operation Postern, PE32+ x86-64)
 //
 // Drop `version.dll` (and optional `hoi4_accel.ini`) next to `hoi4.exe`.
@@ -211,6 +211,38 @@ static constexpr uintptr_t RVA_NDEF_VAR_XP_RES_LAND   = 0x33e63b4; // i32  (50 -
 static constexpr uintptr_t RVA_NDEF_XP_UPG_LAND_EQ    = 0x33e7758; // fp64 (100,000 -> 200,000)
 static constexpr uintptr_t RVA_NDEF_XP_UPD_LAND_TMPL  = 0x33e76c8; // fp64 (200,000 -> 250,000)
 static constexpr uintptr_t RVA_NDEF_ASSIGN_TANKS_WAR  = 0x33e8cb0; // fp64 (600,000 -> 1,000,000)
+
+// v1.4: Native Empty-Tile Capture (CMoveCommand @ 0x13fa480 + CSession::Post)
+static constexpr size_t    OFF_PROV_UNITS_DATA        = 0x170;
+static constexpr size_t    OFF_PROV_UNITS_LEN         = 0x17c;
+static constexpr size_t    OFF_PROV_CTRL_TAG          = 0x188;
+static constexpr uintptr_t RVA_PROV_HAS_UNITS_OF_TYPE = 0x0ef2850;
+static constexpr uintptr_t RVA_TAG_GET_INDEX          = 0x0c0a4e0;
+static constexpr uintptr_t RVA_COUNTRY_IS_AT_WAR_WITH = 0x0749580;
+static constexpr uintptr_t RVA_UNIT_IS_RETREATING     = 0x0ce7cf0;
+static constexpr uintptr_t RVA_UNIT_CAN_MOVE_INTO     = 0x0cd6fd0;
+static constexpr uintptr_t RVA_MOVE_CMD_CTOR          = 0x13fa480;
+static constexpr size_t    MOVE_CMD_SIZE              = 0x88;
+
+// v1.4: Anti-Frontline-Shuffling, Smart Naval Invasions & Strike Force Concentration (NDefines::NAI)
+static constexpr uintptr_t RVA_NDEF_REASSIGN_FRONT        = 0x33e8df0; // fp64 (50,000 -> 20,000)
+static constexpr uintptr_t RVA_NDEF_REASSIGN_FRONT_COMBAT = 0x33e8e88; // fp64 (20,000 -> 5,000)
+static constexpr uintptr_t RVA_NDEF_REDEPLOY_DIST_VS_ORD  = 0x33eb748; // fp64 (100,000 -> 200,000)
+static constexpr uintptr_t RVA_NDEF_INV_NO_PORT_FAC       = 0x33e95b8; // fp64 (30,000 -> 5,000)
+static constexpr uintptr_t RVA_NDEF_INV_MIN_PLAN_VAL      = 0x33e9d30; // fp64 (30,000 -> 45,000)
+static constexpr uintptr_t RVA_NDEF_INV_MIN_ORG_FAC       = 0x33e9db0; // fp64 (40,000 -> 65,000)
+static constexpr uintptr_t RVA_NDEF_INV_MIN_UNITS_RDY     = 0x33e9e68; // fp64 (25,000 -> 60,000)
+static constexpr uintptr_t RVA_NDEF_INV_UNITS_MIN_PLAN    = 0x33e9f00; // fp64 (75,000 -> 85,000)
+static constexpr uintptr_t RVA_NDEF_INV_CANCEL_DISADV     = 0x33eab38; // fp64 (350,000 -> 180,000)
+static constexpr uintptr_t RVA_NDEF_INV_CANCEL_MIN_HRS    = 0x33eac18; // i32  (720 -> 120)
+static constexpr uintptr_t RVA_NDEF_INV_FAILED_AVOID      = 0x33e9864; // i32  (60 -> 120)
+static constexpr uintptr_t RVA_NDEF_INV_FAILED_PORT_FAC   = 0x33e99f0; // fp64 (66,000 -> 35,000)
+static constexpr uintptr_t RVA_NDEF_INV_COASTAL_PER_ORD   = 0x33e8260; // i32  (24 -> 40)
+static constexpr uintptr_t RVA_NDEF_NAVY_PREF_MAX_SIZE    = 0x33e81b8; // i32  (25 -> 60)
+static constexpr uintptr_t RVA_NDEF_CAP_TF_MAX_CAP        = 0x33eb460; // i32  (12 -> 16)
+static constexpr uintptr_t RVA_NDEF_SCR_TF_MAX_SHIP       = 0x33eb518; // i32  (12 -> 24)
+static constexpr uintptr_t RVA_NDEF_STRIKE_RECALC_DAYS    = 0x33e6a78; // i32  (5 -> 3)
+static constexpr uintptr_t RVA_NDEF_MAX_PATROL_STRIKE_R   = 0x33e5a24; // f32  (4.0f -> 2.0f)
 
 // v1.1: Smart Airbase Expansion (CAIConstruction::GetBuildingQueuePrio + Air Coverage NDefines::NAI)
 static constexpr uintptr_t RVA_GET_BLDG_QUEUE_PRIO    = 0x1395220;
@@ -437,11 +469,14 @@ static std::atomic<bool> g_fast_alloc_enabled{false};
 static std::atomic<bool> g_civil_war_fix_enabled{false};
 static std::atomic<bool> g_ai_smart_supply_enabled{false};
 static std::atomic<bool> g_ai_smart_supply_applied{false};
+static std::atomic<bool> g_ai_capture_empty_enabled{false};
 static std::atomic<bool> g_ai_smart_airbase_enabled{false};
 static std::atomic<bool> g_ai_smart_airbase_defines_applied{false};
 static std::atomic<bool> g_ai_tactical_prudence_enabled{false};
 static std::atomic<bool> g_ai_tactical_prudence_applied{false};
 static std::atomic<bool> g_empty_tile_fix_applied{false};
+static std::atomic<bool> g_ai_smart_naval_enabled{false};
+static std::atomic<bool> g_ai_smart_naval_applied{false};
 static std::atomic<bool> g_ai_smart_armor_enabled{false};
 static std::atomic<bool> g_ai_smart_armor_defines_applied{false};
 static std::atomic<bool> g_ai_smart_peace_enabled{false};
@@ -461,6 +496,7 @@ static std::atomic<uint64_t> g_slab_free_hits{0};
 static std::atomic<uint64_t> g_slab_fallbacks{0};
 static std::atomic<uint64_t> g_cw_rebuilds_coalesced{0};
 static std::atomic<uint64_t> g_ai_supply_hubs_queued{0};
+static std::atomic<uint64_t> g_ai_empty_tiles_captured{0};
 static std::atomic<uint64_t> g_airbase_prio_boosts{0};
 static std::atomic<uint64_t> g_ai_armor_strategy_boosts{0};
 static std::atomic<uint64_t> g_peace_bordergore_adjusts{0};
@@ -625,6 +661,7 @@ static void reset_stats() {
     g_slab_fallbacks.store(0, std::memory_order_relaxed);
     g_cw_rebuilds_coalesced.store(0, std::memory_order_relaxed);
     g_ai_supply_hubs_queued.store(0, std::memory_order_relaxed);
+    g_ai_empty_tiles_captured.store(0, std::memory_order_relaxed);
     g_airbase_prio_boosts.store(0, std::memory_order_relaxed);
     g_ai_armor_strategy_boosts.store(0, std::memory_order_relaxed);
     g_peace_bordergore_adjusts.store(0, std::memory_order_relaxed);
@@ -636,6 +673,7 @@ static void emit_report(uint64_t measured_hours);
 static void apply_ai_smart_supply_once();
 static void apply_ai_smart_airbase_once();
 static void apply_ai_tactical_prudence_once();
+static void apply_ai_smart_naval_once();
 static void apply_ai_smart_armor_once();
 static void apply_ai_smart_peace_once();
 
@@ -753,6 +791,10 @@ extern "C" void hook_update_one_frame(uint8_t* idler, uint8_t allow_sim) {
             if (g_ai_smart_armor_enabled.load(std::memory_order_relaxed) &&
                 !g_ai_smart_armor_defines_applied.load(std::memory_order_relaxed)) {
                 apply_ai_smart_armor_once();
+            }
+            if (g_ai_smart_naval_enabled.load(std::memory_order_relaxed) &&
+                !g_ai_smart_naval_applied.load(std::memory_order_relaxed)) {
+                apply_ai_smart_naval_once();
             }
             if (g_ai_smart_peace_enabled.load(std::memory_order_relaxed) &&
                 !g_ai_smart_peace_defines_applied.load(std::memory_order_relaxed)) {
@@ -1914,7 +1956,7 @@ static bool prov_borders_non_own_land(
     return false;
 }
 
-static bool has_hub_or_port_within_3_hops(
+static bool has_hub_or_port_within_2_hops(
     const uint8_t* gs_sub,
     GsGetProvinceWinFn get_prov,
     const uint8_t* start_prov,
@@ -1938,7 +1980,7 @@ static bool has_hub_or_port_within_3_hops(
         const uint8_t* cont = cur_p + OFF_PROV_BLDG_CONTAINER;
         if (get_bldg_level_in_prov(supply_node, cont) > 0) return true;
         if (naval_base && get_bldg_level_in_prov(naval_base, cont) > 0) return true;
-        if (cur_d >= 3) continue;
+        if (cur_d >= 2) continue;
 
         const auto* sp = *reinterpret_cast<const uint8_t* const*>(cur_p + OFF_PROV_STATIC_DATA);
         if (!sp) continue;
@@ -2008,13 +2050,13 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
     const auto* constr = *reinterpret_cast<const uint8_t* const*>(country + OFF_COUNTRY_CONSTR_PTR);
     if (!constr) return;
     int64_t total_fac = *reinterpret_cast<const int64_t*>(constr + 0x2d0) / 100000LL;
-    if (total_fac < 20) return;
+    if (total_fac < 12) return;
 
     int32_t raw_date = *reinterpret_cast<const int32_t*>(gs + OFF_GS_CDATE_HOURS);
     auto cur_hours = static_cast<uint32_t>(raw_date - 0x029c55c0);
     auto& cd_slot = g_supply_hub_last_hr[static_cast<size_t>(tag_id) & 511U];
     uint32_t last_hr = cd_slot.load(std::memory_order_relaxed);
-    if (last_hr != 0 && static_cast<uint32_t>(cur_hours - last_hr) < 720U) return;
+    if (last_hr != 0 && static_cast<uint32_t>(cur_hours - last_hr) < 504U) return;
 
     // Strictly max 1 active supply_node in country's construction queue at a time
     const auto* q_ptr = *reinterpret_cast<const uint8_t* const* const*>(constr + 0x70);
@@ -2035,15 +2077,16 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
         }
     }
 
-    // Scan country's own land divisions for starving clusters (< 50% supply)
+    // Scan country's own land divisions for starving clusters (< 65% supply)
     const auto* units_ptr = *reinterpret_cast<const uint8_t* const* const*>(country + OFF_COUNTRY_UNITS_DATA);
     int32_t units_len = *reinterpret_cast<const int32_t*>(country + OFF_COUNTRY_UNITS_LEN);
-    if (!units_ptr || units_len < 3) return;
+    if (!units_ptr || units_len < 1) return;
 
     auto get_ctrl = reinterpret_cast<BldgContCtrlTagWinFn>(g_exe_base + RVA_BLDG_CONT_CTRL_TAG);
     int32_t starv_ids[64];
     const uint8_t* starv_ptrs[64];
     uint16_t starv_cnts[64];
+    int64_t starv_min_ratio[64];
     size_t starv_len = 0;
 
     int32_t ucap = (units_len < 2048) ? units_len : 2048;
@@ -2052,7 +2095,7 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
         if (!unit) continue;
         int64_t supply_needed = *reinterpret_cast<const int64_t*>(unit + 0x38);
         int64_t supply_ratio  = *reinterpret_cast<const int64_t*>(unit + 0x40);
-        if (supply_needed <= 0 || supply_ratio >= 50000LL) continue;
+        if (supply_needed <= 0 || supply_ratio >= 65000LL) continue;
         const auto* prov = *reinterpret_cast<const uint8_t* const*>(unit + 0x1f0);
         if (!prov) continue;
         int32_t prov_id = *reinterpret_cast<const int32_t*>(prov + OFF_PROV_ID);
@@ -2066,6 +2109,7 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
         for (size_t k = 0; k < starv_len; ++k) {
             if (starv_ids[k] == prov_id) {
                 if (starv_cnts[k] < 65535U) ++starv_cnts[k];
+                if (supply_ratio < starv_min_ratio[k]) starv_min_ratio[k] = supply_ratio;
                 found = true;
                 break;
             }
@@ -2074,6 +2118,7 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
             starv_ids[starv_len] = prov_id;
             starv_ptrs[starv_len] = prov;
             starv_cnts[starv_len] = 1;
+            starv_min_ratio[starv_len] = supply_ratio;
             ++starv_len;
         }
     }
@@ -2104,7 +2149,7 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
             best_idx = i;
         }
     }
-    if (best_idx >= starv_len || best_score < 3U) return;
+    if (best_idx >= starv_len || (best_score < 2U && starv_min_ratio[best_idx] >= 35000LL)) return;
 
     const uint8_t* worst_prov = starv_ptrs[best_idx];
     auto can_constr = reinterpret_cast<BldgContCanConstrWinFn>(g_exe_base + RVA_BLDG_CONT_CAN_CONSTR);
@@ -2146,7 +2191,7 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
     for (size_t ci = 0; ci < n_cands; ++ci) {
         const uint8_t* cand = cands[ci];
         if (can_constr(cand + OFF_PROV_BLDG_CONTAINER, supply_node, 0) == 0) continue;
-        if (has_hub_or_port_within_3_hops(gs_sub, get_prov, cand, supply_node, naval_base)) continue;
+        if (has_hub_or_port_within_2_hops(gs_sub, get_prov, cand, supply_node, naval_base)) continue;
         chosen = cand;
         break;
     }
@@ -2189,6 +2234,195 @@ static void try_queue_wartime_supply_hub(uint8_t* ai_constr) {
     }
 }
 
+// --- v1.4 Native Empty-Tile Capture (CMoveCommand @ 0x13fa480 + CSession::Post) ---
+using ProvHasUnitsWinFn     = uint8_t (*)(const uint8_t* prov, int32_t unit_type);
+using TagGetIndexWinFn      = int32_t (*)(const int32_t* tag_id);
+using CountryIsAtWarWithWin = uint8_t (*)(const uint8_t* country, const int32_t* tag_pair);
+using UnitAsLandWinFn       = const uint8_t* (*)(const uint8_t* unit);
+using UnitBoolWinFn         = uint8_t (*)(const uint8_t* unit);
+using UnitGetOrgRatioWinFn  = int64_t* (*)(const uint8_t* land_unit, int64_t* out_fp);
+using UnitCanMoveIntoWinFn  = uint8_t (*)(const uint8_t* land_unit, const uint8_t* target_prov);
+using MoveCmdCtorWinFn      = uint8_t* (*)(
+    uint8_t* cmd, const uint8_t* unit, int32_t target_prov_id, uint8_t clear_path,
+    int32_t move_mode, uint8_t a6, uint8_t a7, uint8_t a8, uint8_t a9, uint8_t a10
+);
+using CmdCanExecWinFn       = uint8_t (*)(uint8_t* cmd, uint8_t arg);
+using CmdDeletingDtorWinFn  = void (*)(uint8_t* cmd, uint32_t flags);
+
+__forceinline bool is_enemy_tag_win(const uint8_t* country, int32_t other_tag) {
+    if (other_tag <= 0 || g_exe_base == 0) return false;
+    auto get_idx = reinterpret_cast<TagGetIndexWinFn>(g_exe_base + RVA_TAG_GET_INDEX);
+    auto is_war  = reinterpret_cast<CountryIsAtWarWithWin>(g_exe_base + RVA_COUNTRY_IS_AT_WAR_WITH);
+    int32_t pair[2] = {other_tag, get_idx(&other_tag)};
+    return is_war(country, pair) != 0;
+}
+
+static void try_capture_empty_enemy_tiles(uint8_t* ai_constr) {
+    if (g_exe_base == 0 || !ai_constr) return;
+    const auto* gs = *reinterpret_cast<const uint8_t* const*>(g_exe_base + RVA_GAMESTATE_PTR);
+    if (!gs) return;
+    const uint8_t* gs_sub = gs + 0x08;
+    const auto* gs_sub_vt = *reinterpret_cast<const uintptr_t* const*>(gs_sub);
+    if (!gs_sub_vt || gs_sub_vt[0] == 0) return;
+    auto get_prov = reinterpret_cast<GsGetProvinceWinFn>(gs_sub_vt[0]);
+
+    auto* obj = *reinterpret_cast<uint8_t* const*>(ai_constr + 0x08);
+    if (!obj) return;
+    const auto* obj_vt = *reinterpret_cast<const uintptr_t* const*>(obj);
+    if (!obj_vt || obj_vt[0x08 / 8] == 0) return;
+    uint8_t* base_ai = reinterpret_cast<BaseAiResolveWinFn>(obj_vt[0x08 / 8])(obj);
+    if (!base_ai) return;
+
+    const uint32_t* tag_ptr = reinterpret_cast<BaseAiGetTagWinFn>(g_exe_base + RVA_BASE_AI_GET_TAG)(base_ai);
+    uint8_t* country = reinterpret_cast<BaseAiResolveWinFn>(g_exe_base + RVA_BASE_AI_GET_COUNTRY)(base_ai);
+    if (!tag_ptr || !country) return;
+    uint32_t tag_id = *tag_ptr;
+    if (tag_id == 0) return;
+
+    using WinHasHumanFn = uint8_t (*)(uint8_t*);
+    using WinIsAtWarFn  = uint8_t (*)(const uint8_t*, uint8_t);
+    if (reinterpret_cast<WinHasHumanFn>(g_exe_base + RVA_COUNTRY_HAS_HUMAN)(country) != 0) return;
+    const auto* diplo = *reinterpret_cast<const uint8_t* const*>(country + OFF_COUNTRY_DIPLO_PTR);
+    if (!diplo) return;
+    if (reinterpret_cast<WinIsAtWarFn>(g_exe_base + RVA_DIPLO_IS_AT_WAR)(diplo, 0) == 0) return;
+
+    const auto* units_ptr = *reinterpret_cast<const uint8_t* const* const*>(country + OFF_COUNTRY_UNITS_DATA);
+    int32_t units_len = *reinterpret_cast<const int32_t*>(country + OFF_COUNTRY_UNITS_LEN);
+    if (!units_ptr || units_len <= 0) return;
+
+    auto has_units     = reinterpret_cast<ProvHasUnitsWinFn>(g_exe_base + RVA_PROV_HAS_UNITS_OF_TYPE);
+    auto is_retreating = reinterpret_cast<UnitBoolWinFn>(g_exe_base + RVA_UNIT_IS_RETREATING);
+    auto can_move_into = reinterpret_cast<UnitCanMoveIntoWinFn>(g_exe_base + RVA_UNIT_CAN_MOVE_INTO);
+    auto op_new        = reinterpret_cast<OpNewWinFn>(g_exe_base + RVA_OP_NEW);
+    auto move_ctor     = reinterpret_cast<MoveCmdCtorWinFn>(g_exe_base + RVA_MOVE_CMD_CTOR);
+    auto post_cmd      = reinterpret_cast<SessionPostWinFn>(g_exe_base + RVA_SESSION_POST);
+
+    static constexpr size_t MAX_CAPTURES_PER_DAY = 6;
+    int32_t targeted_provs[MAX_CAPTURES_PER_DAY] = {0};
+    int32_t moved_from_provs[MAX_CAPTURES_PER_DAY] = {0};
+    size_t moved_cnt = 0;
+
+    int32_t ucap = (units_len < 1024) ? units_len : 1024;
+    for (int32_t i = 0; i < ucap && moved_cnt < MAX_CAPTURES_PER_DAY; ++i) {
+        const uint8_t* unit = units_ptr[i];
+        if (!unit) continue;
+        if (*reinterpret_cast<const uintptr_t*>(unit + 0x1e8) != 0) continue; // in combat
+        if (*reinterpret_cast<const int32_t*>(unit + 0x1b4) > 0) continue;    // already moving
+
+        const auto* unit_vt = *reinterpret_cast<const uintptr_t* const*>(unit);
+        if (!unit_vt || unit_vt[0x38 / 8] == 0) continue;
+        const uint8_t* land = reinterpret_cast<UnitAsLandWinFn>(unit_vt[0x38 / 8])(unit);
+        if (!land || is_retreating(land) != 0) continue;
+
+        const auto* land_vt = *reinterpret_cast<const uintptr_t* const*>(land);
+        if (!land_vt || land_vt[0x118 / 8] == 0) continue;
+        int64_t org_ratio = 0;
+        reinterpret_cast<UnitGetOrgRatioWinFn>(land_vt[0x118 / 8])(land, &org_ratio);
+        if (org_ratio < 35000LL) continue;
+
+        const auto* cur_prov = *reinterpret_cast<const uint8_t* const*>(unit + 0x1f0);
+        if (!cur_prov) continue;
+        int32_t cur_id = *reinterpret_cast<const int32_t*>(cur_prov + OFF_PROV_ID);
+        const auto* cur_sp = *reinterpret_cast<const uint8_t* const*>(cur_prov + OFF_PROV_STATIC_DATA);
+        if (cur_id <= 0 || !cur_sp || (cur_sp[0xd2] & 1U) == 0) continue;
+
+        const auto* pu_ptr = *reinterpret_cast<const uint8_t* const* const*>(cur_prov + OFF_PROV_UNITS_DATA);
+        int32_t pu_len = *reinterpret_cast<const int32_t*>(cur_prov + OFF_PROV_UNITS_LEN);
+        int32_t friendly_here = 0;
+        if (pu_ptr && pu_len > 0) {
+            int32_t pcap = (pu_len < 64) ? pu_len : 64;
+            for (int32_t k = 0; k < pcap; ++k) {
+                const uint8_t* u = pu_ptr[k];
+                if (u && *reinterpret_cast<const uint32_t*>(u + 0x1e0) == tag_id) {
+                    ++friendly_here;
+                }
+            }
+        }
+        for (size_t k = 0; k < moved_cnt; ++k) {
+            if (moved_from_provs[k] == cur_id) --friendly_here;
+        }
+
+        const auto* adj_ptr = *reinterpret_cast<const uint8_t* const*>(cur_sp + 0x70);
+        int32_t adj_len = *reinterpret_cast<const int32_t*>(cur_sp + 0x7c);
+        if (!adj_ptr || adj_len <= 0) continue;
+
+        int32_t acap = (adj_len < 32) ? adj_len : 32;
+        for (int32_t j = 0; j < acap; ++j) {
+            const uint8_t* adj = adj_ptr + static_cast<size_t>(j) * 0x30;
+            if (adj[0x10] == 4) continue;
+            int32_t nb_id = *reinterpret_cast<const int32_t*>(adj + 0x08);
+            if (nb_id <= 0) continue;
+
+            bool already_tgt = false;
+            for (size_t k = 0; k < moved_cnt; ++k) {
+                if (targeted_provs[k] == nb_id) { already_tgt = true; break; }
+            }
+            if (already_tgt) continue;
+
+            const uint8_t* nb = get_prov(gs_sub, nb_id);
+            if (!nb) continue;
+            const auto* nb_sp = *reinterpret_cast<const uint8_t* const*>(nb + OFF_PROV_STATIC_DATA);
+            if (!nb_sp || (nb_sp[0xd2] & 1U) == 0) continue;
+            int32_t nb_ctrl = *reinterpret_cast<const int32_t*>(nb + OFF_PROV_CTRL_TAG);
+            if (nb_ctrl <= 0 || static_cast<uint32_t>(nb_ctrl) == tag_id) continue;
+            if (!is_enemy_tag_win(country, nb_ctrl)) continue;
+            if (has_units(nb, 1) != 0) continue; // strictly empty!
+            if (can_move_into(land, nb) == 0) continue;
+
+            if (friendly_here < 2) {
+                bool enemy_adj = false;
+                const auto* nb_adj_ptr = *reinterpret_cast<const uint8_t* const*>(nb_sp + 0x70);
+                int32_t nb_adj_len = *reinterpret_cast<const int32_t*>(nb_sp + 0x7c);
+                if (nb_adj_ptr && nb_adj_len > 0) {
+                    int32_t ncap = (nb_adj_len < 32) ? nb_adj_len : 32;
+                    for (int32_t m = 0; m < ncap; ++m) {
+                        const uint8_t* na = nb_adj_ptr + static_cast<size_t>(m) * 0x30;
+                        if (na[0x10] == 4) continue;
+                        int32_t nn_id = *reinterpret_cast<const int32_t*>(na + 0x08);
+                        if (nn_id <= 0 || nn_id == cur_id) continue;
+                        const uint8_t* nn = get_prov(gs_sub, nn_id);
+                        if (!nn) continue;
+                        const auto* nn_sp = *reinterpret_cast<const uint8_t* const*>(nn + OFF_PROV_STATIC_DATA);
+                        if (!nn_sp || (nn_sp[0xd2] & 1U) == 0) continue;
+                        int32_t nn_ctrl = *reinterpret_cast<const int32_t*>(nn + OFF_PROV_CTRL_TAG);
+                        if (nn_ctrl > 0 && static_cast<uint32_t>(nn_ctrl) != tag_id &&
+                            has_units(nn, 1) != 0 && is_enemy_tag_win(country, nn_ctrl)) {
+                            enemy_adj = true;
+                            break;
+                        }
+                    }
+                }
+                if (enemy_adj) continue;
+            }
+
+            uint8_t* cmd = op_new(MOVE_CMD_SIZE);
+            if (!cmd) break;
+            move_ctor(cmd, unit, nb_id, 1, 2, 0, 0, 0, 0, 0);
+            const auto* cmd_vt = *reinterpret_cast<const uintptr_t* const*>(cmd);
+            if (reinterpret_cast<CmdCanExecWinFn>(cmd_vt[0x48 / 8])(cmd, 0) != 0) {
+                post_cmd(cmd, tag_ptr);
+                targeted_provs[moved_cnt] = nb_id;
+                moved_from_provs[moved_cnt] = cur_id;
+                ++moved_cnt;
+                uint64_t tot = g_ai_empty_tiles_captured.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (tot <= 16) {
+                    char msg[256];
+                    std::snprintf(
+                        msg, sizeof(msg),
+                        "[hoi4-accel] AI captured empty enemy tile #%llu (tag_id=%u, %d -> %d, friendly_here=%d)\r\n",
+                        static_cast<unsigned long long>(tot), tag_id,
+                        static_cast<int>(cur_id), static_cast<int>(nb_id), static_cast<int>(friendly_here)
+                    );
+                    append_log_line(msg);
+                }
+                break;
+            } else {
+                reinterpret_cast<CmdDeletingDtorWinFn>(cmd_vt[0])(cmd, 1);
+            }
+        }
+    }
+}
+
 extern "C" void hook_fix_supply_bottlenecks(uint8_t* ai_constr) {
     auto orig = reinterpret_cast<FixSupplyBottlenecksFn>(
         g_orig_fix_supply_bottlenecks.load(std::memory_order_relaxed)
@@ -2197,6 +2431,9 @@ extern "C" void hook_fix_supply_bottlenecks(uint8_t* ai_constr) {
     if (g_ai_smart_supply_enabled.load(std::memory_order_relaxed) &&
         g_ai_smart_supply_applied.load(std::memory_order_acquire)) {
         try_queue_wartime_supply_hub(ai_constr);
+    }
+    if (g_ai_capture_empty_enabled.load(std::memory_order_relaxed)) {
+        try_capture_empty_enemy_tiles(ai_constr);
     }
 }
 
@@ -2428,13 +2665,75 @@ static void apply_ai_tactical_prudence_once() {
     raise_fp64(RVA_NDEF_AIFC_TGT_PORT_LVL,  200000LL);   // 1    -> 2    (Sheep AI)
     raise_fp64(RVA_NDEF_AIFC_COST_MTN,      400000LL);   // 3.0  -> 4.0  (Sheep AI: route spearheads around mountains)
 
+    // 6. Anti-Frontline-Shuffling (v1.4: stop ripping divisions across fronts and zeroing org!)
+    lower_fp64(RVA_NDEF_REASSIGN_FRONT,        20000LL);   // 0.50 -> 0.20
+    lower_fp64(RVA_NDEF_REASSIGN_FRONT_COMBAT, 5000LL);    // 0.20 -> 0.05
+    raise_fp64(RVA_NDEF_REDEPLOY_DIST_VS_ORD,  200000LL);  // 1.00 -> 2.00
+
     char msg[256];
     std::snprintf(
         msg,
         sizeof(msg),
-        "[hoi4-accel] AI Tactical Prudence v3 active (%d/40 NAI defines tuned; empty_tile_patch=%d, inactive_micro=-1.00)\r\n",
+        "[hoi4-accel] AI Tactical Prudence v4 active (%d/43 NAI defines tuned; empty_tile_patch=%d, anti_shuffle=1)\r\n",
         changed,
         g_empty_tile_fix_applied.load(std::memory_order_relaxed) ? 1 : 0
+    );
+    append_log_line(msg);
+}
+
+// --- v1.4 Smart Naval Invasions & Strike Force Concentration ---
+static void apply_ai_smart_naval_once() {
+    bool expected = false;
+    if (!g_ai_smart_naval_applied.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        return;
+    }
+    if (g_exe_base == 0) return;
+
+    int changed = 0;
+    auto raise_fp64 = [&](uintptr_t rva, int64_t target) {
+        auto* p = reinterpret_cast<int64_t*>(g_exe_base + rva);
+        if (*p > 0 && *p < target) { *p = target; ++changed; }
+    };
+    auto lower_fp64 = [&](uintptr_t rva, int64_t target) {
+        auto* p = reinterpret_cast<int64_t*>(g_exe_base + rva);
+        if (*p > target) { *p = target; ++changed; }
+    };
+    auto raise_i32 = [&](uintptr_t rva, int32_t target) {
+        auto* p = reinterpret_cast<int32_t*>(g_exe_base + rva);
+        if (*p > 0 && *p < target) { *p = target; ++changed; }
+    };
+    auto lower_i32 = [&](uintptr_t rva, int32_t target) {
+        auto* p = reinterpret_cast<int32_t*>(g_exe_base + rva);
+        if (*p > target) { *p = target; ++changed; }
+    };
+
+    lower_fp64(RVA_NDEF_INV_NO_PORT_FAC,      5000LL);
+    raise_fp64(RVA_NDEF_INV_MIN_PLAN_VAL,     45000LL);
+    raise_fp64(RVA_NDEF_INV_MIN_ORG_FAC,      65000LL);
+    raise_fp64(RVA_NDEF_INV_MIN_UNITS_RDY,    60000LL);
+    raise_fp64(RVA_NDEF_INV_UNITS_MIN_PLAN,   85000LL);
+    lower_fp64(RVA_NDEF_INV_CANCEL_DISADV,    180000LL);
+    lower_i32(RVA_NDEF_INV_CANCEL_MIN_HRS,    120);
+    raise_i32(RVA_NDEF_INV_FAILED_AVOID,      120);
+    lower_fp64(RVA_NDEF_INV_FAILED_PORT_FAC,  35000LL);
+    raise_i32(RVA_NDEF_INV_COASTAL_PER_ORD,   40);
+
+    raise_i32(RVA_NDEF_NAVY_PREF_MAX_SIZE,    60);
+    raise_i32(RVA_NDEF_CAP_TF_MAX_CAP,        16);
+    raise_i32(RVA_NDEF_SCR_TF_MAX_SHIP,       24);
+    lower_i32(RVA_NDEF_STRIKE_RECALC_DAYS,    3);
+    auto* p_patrol = reinterpret_cast<float*>(g_exe_base + RVA_NDEF_MAX_PATROL_STRIKE_R);
+    if (*p_patrol > 2.0f) {
+        *p_patrol = 2.0f;
+        ++changed;
+    }
+
+    char msg[256];
+    std::snprintf(
+        msg, sizeof(msg),
+        "[hoi4-accel] AI Smart Naval active: %d/15 invasion & strike-force defines tuned\r\n",
+        changed
     );
     append_log_line(msg);
 }
@@ -3032,7 +3331,7 @@ static void emit_report(uint64_t measured_hours) {
     uint64_t tf_fps = (tf_ns > 0) ? (1000000000ULL / tf_ns) : 0;
     uint64_t sf_fps = g_smooth_fps.load(std::memory_order_relaxed);
 
-    put("\r\n================ HOI4 ACCEL v1.3-win64 REPORT ================\r\n");
+    put("\r\n================ HOI4 ACCEL v1.4-win64 REPORT ================\r\n");
     put("Measured Hours : %llu (%.2f game days)\r\n",
         static_cast<unsigned long long>(measured_hours), days);
     put("Wall Time      : %.3f s\r\n", wall_s);
@@ -3040,7 +3339,7 @@ static void emit_report(uint64_t measured_hours) {
         hours_per_sec, days_per_sec, ms_per_day);
     put("CPU Utilization: %.2fs CPU in %.2fs wall  =>  %.2f active cores (of %lu logical)\r\n",
         cpu_s, wall_s, active_cores, static_cast<unsigned long>(si.dwNumberOfProcessors));
-    put("Config         : target_fps=%llu smooth_fps=%llu fast_alloc=%d fast_mod=%d country_grain=%d civil_war_fix=%d ai_smart_supply=%d ai_smart_airbase=%d ai_tactical_prudence=%d ai_smart_armor=%d ai_smart_peace=%d ai_throttle_minors=%d fast_sched=%d fast_wait=%d fast_yield=%d no_job_clock=%d affinity=%d quiet_log=%d fast_save=%d no_telemetry=%d\r\n",
+    put("Config         : target_fps=%llu smooth_fps=%llu fast_alloc=%d fast_mod=%d country_grain=%d civil_war_fix=%d ai_smart_supply=%d ai_capture_empty=%d ai_smart_airbase=%d ai_tactical_prudence=%d ai_smart_naval=%d ai_smart_armor=%d ai_smart_peace=%d ai_throttle_minors=%d fast_sched=%d fast_wait=%d fast_yield=%d no_job_clock=%d affinity=%d quiet_log=%d fast_save=%d no_telemetry=%d\r\n",
         static_cast<unsigned long long>(tf_fps),
         static_cast<unsigned long long>(sf_fps),
         g_fast_alloc_enabled.load() ? 1 : 0,
@@ -3048,8 +3347,10 @@ static void emit_report(uint64_t measured_hours) {
         g_country_grain_enabled.load() ? 1 : 0,
         g_civil_war_fix_enabled.load() ? 1 : 0,
         g_ai_smart_supply_enabled.load() ? 1 : 0,
+        g_ai_capture_empty_enabled.load() ? 1 : 0,
         g_ai_smart_airbase_enabled.load() ? 1 : 0,
         g_ai_tactical_prudence_enabled.load() ? 1 : 0,
+        g_ai_smart_naval_enabled.load() ? 1 : 0,
         g_ai_smart_armor_enabled.load() ? 1 : 0,
         g_ai_smart_peace_enabled.load() ? 1 : 0,
         g_ai_throttle_minors_enabled.load() ? 1 : 0,
@@ -3131,17 +3432,25 @@ static void emit_report(uint64_t measured_hours) {
             static_cast<unsigned long long>(g_cw_rebuilds_coalesced.load()));
     }
     if (g_ai_smart_supply_enabled.load()) {
-        put("SmartSupply    : %llu wartime land supply_node hubs auto-queued (max 1 active/country, 3-hop BFS)\r\n",
+        put("SmartSupply    : %llu wartime land supply_node hubs auto-queued (max 1 active/country, 2-hop BFS, >=12 fac)\r\n",
             static_cast<unsigned long long>(g_ai_supply_hubs_queued.load()));
+    }
+    if (g_ai_capture_empty_enabled.load()) {
+        put("CaptureEmpty   : %llu empty enemy provinces captured via native CMoveCommand (pocket-safe)\r\n",
+            static_cast<unsigned long long>(g_ai_empty_tiles_captured.load()));
     }
     if (g_ai_smart_airbase_enabled.load()) {
         put("SmartAirbase   : %llu queued air_base priority evaluations boosted (3.2x)\r\n",
             static_cast<unsigned long long>(g_airbase_prio_boosts.load()));
     }
     if (g_ai_tactical_prudence_enabled.load()) {
-        put("TacticalAI     : Sheep-AI v3 prudence & total empty-tile fix active (applied=%d, empty_tile_patch=%d)\r\n",
+        put("TacticalAI     : Sheep-AI v4 prudence, anti-shuffle & empty-tile patch active (applied=%d, empty_tile_patch=%d)\r\n",
             g_ai_tactical_prudence_applied.load() ? 1 : 0,
             g_empty_tile_fix_applied.load() ? 1 : 0);
+    }
+    if (g_ai_smart_naval_enabled.load()) {
+        put("SmartNaval     : Anti-suicide invasions & Strike Force concentration active (applied=%d)\r\n",
+            g_ai_smart_naval_applied.load() ? 1 : 0);
     }
     if (g_ai_smart_armor_enabled.load()) {
         put("SmartArmor     : %llu industrial-scaled armor/mech strategy queries adjusted (defines_applied=%d)\r\n",
@@ -3340,7 +3649,7 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
     std::snprintf(
         hdr,
         sizeof(hdr),
-        "[hoi4-accel v1.3-win64] Attached to hoi4.exe (pid=%lu, base=0x%llx, preset=%s)\r\n",
+        "[hoi4-accel v1.4-win64] Attached to hoi4.exe (pid=%lu, base=0x%llx, preset=%s)\r\n",
         static_cast<unsigned long>(GetCurrentProcessId()),
         static_cast<unsigned long long>(g_exe_base),
         preset
@@ -3349,8 +3658,15 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
 
     bool want_ai_smart_supply = !noop_mode &&
                                 get_cfg_bool("HOI4_ACCEL_AI_SMART_SUPPLY", L"ai_smart_supply", def_core);
+    bool want_ai_capture_empty = !noop_mode &&
+                                 get_cfg_bool("HOI4_ACCEL_AI_CAPTURE_EMPTY", L"ai_capture_empty", def_core);
     if (want_ai_smart_supply) {
         g_ai_smart_supply_enabled.store(true, std::memory_order_release);
+    }
+    if (want_ai_capture_empty) {
+        g_ai_capture_empty_enabled.store(true, std::memory_order_release);
+    }
+    if (want_ai_smart_supply || want_ai_capture_empty) {
         uintptr_t tramp_sb = install_trampoline_hook(
             g_exe_base + RVA_FIX_SUPPLY_BOTTLENECKS,
             SIG_FIX_SUPPLY_BOTTLENECKS,
@@ -3359,10 +3675,21 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
         );
         if (tramp_sb != 0) {
             g_orig_fix_supply_bottlenecks.store(tramp_sb, std::memory_order_release);
-            append_log_line("[hoi4-accel] Enabled AiSmartSupply v2 wartime land supply_node builder (FixSupplyBottlenecks @ 0x13a9fc0)\r\n");
+            char msg[256];
+            std::snprintf(
+                msg, sizeof(msg),
+                "[hoi4-accel] Enabled Daily AI Logistics & Empty-Tile Capture Hook (FixSupplyBottlenecks @ 0x13a9fc0, supply_hub=%d, capture_empty=%d)\r\n",
+                want_ai_smart_supply ? 1 : 0, want_ai_capture_empty ? 1 : 0
+            );
+            append_log_line(msg);
         } else {
-            append_log_line("[hoi4-accel] SKIPPED AiSmartSupply v2 hub hook (prologue signature mismatch)\r\n");
+            append_log_line("[hoi4-accel] SKIPPED FixSupplyBottlenecks daily hook (prologue signature mismatch)\r\n");
         }
+    }
+    bool want_ai_smart_naval = !noop_mode &&
+                               get_cfg_bool("HOI4_ACCEL_AI_SMART_NAVAL", L"ai_smart_naval", def_core);
+    if (want_ai_smart_naval) {
+        g_ai_smart_naval_enabled.store(true, std::memory_order_release);
     }
     bool want_ai_smart_airbase = !noop_mode &&
                                  get_cfg_bool("HOI4_ACCEL_AI_SMART_AIRBASE", L"ai_smart_airbase", def_core);
@@ -3466,8 +3793,10 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
                             bench_hours > 0 ||
                             g_collect_zones.load(std::memory_order_relaxed) ||
                             want_ai_smart_supply ||
+                            want_ai_capture_empty ||
                             want_ai_smart_airbase ||
                             want_ai_tactical_prudence ||
+                            want_ai_smart_naval ||
                             want_ai_smart_armor ||
                             want_ai_smart_peace;
     if (need_frame_hooks) {
