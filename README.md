@@ -9,14 +9,14 @@
 - **100% неинвазивно:** оригинальные бинарники игры (`hoi4` и `hoi4.exe`) и игровые файлы на диске не изменяются ни на один байт.
 - **Без читов и нарушения баланса:** ускоритель не трогает `NMilitary` / `NProduction` / `NCountry` (правила боя и производства одинаковы для игрока и бота) и не рисует боту бесплатные заводы, танки или снаряжение. Все улучшения ИИ работают строго через решения ИИ, нативные MP-безопасные команды (`CMoveCommand`, `CAddConstructionCommand`) и веса стратегий.
 - **Нулевые конфликты с модами:** работает прямо из `.so` / `version.dll` с ваниллой, всеми DLC, сохранениями и модами (*Road to 56, Kaiserreich/KaiserreduX, BlackICE, TNO, Millennium Dawn, The Fire Rises* и др.).
-- **Версионность и быстрый откат:** в GitHub Releases доступны все версии (`v1.0.0`, `v1.1.0`, `v1.2.0`, `v1.3.0`, `v1.4.0`), а любой модуль можно мгновенно отключить флагом `= 0` в `hoi4_accel.ini`.
+- **Версионность и быстрый откат:** в GitHub Releases доступны все версии (`v1.0.0`, `v1.1.0`, `v1.2.0`, `v1.3.0`, `v1.4.1`), а любой модуль можно мгновенно отключить флагом `= 0` в `hoi4_accel.ini`.
 
 ---
 
 ## Быстрый запуск
 
 ### Windows
-Скопируйте `version.dll` и `hoi4_accel.ini` из `windows/dist/` (или из архива релиза `hoi4-accel-v1.4.0-windows-x64.zip`) прямо в папку с `hoi4.exe` и запускайте игру как обычно. Подробнее — в `windows/README_WINDOWS.md`.
+Скопируйте `version.dll` и `hoi4_accel.ini` из `windows/dist/` (или из архива релиза `hoi4-accel-v1.4.1-windows-x64.zip`) прямо в папку с `hoi4.exe` и запускайте игру как обычно. Подробнее — в `windows/README_WINDOWS.md`.
 
 ### Linux (Steam)
 В Steam: **ПКМ по Hearts of Iron IV → Свойства → Параметры запуска**:
@@ -36,7 +36,7 @@
 2. **`AiSmartSupply v3` (`ai_smart_supply = 1` — доводка автостроителя сухопутных `supply_node`):**
    - Ослаблены перестрахованные пороги `v1.3`: радиус проверки BFS снижен с `3` до **`2` клеток** (чтобы узлы строились и на европейских фронтах, а не только в пустой Сибири), порог промышленности снижен до **`>= 12` заводов** (работает и в гражданских войнах), порог голода — `< 65%` снабжения у `>= 2` дивизий в секторе (или `< 35%` у `>= 1` на редких фронтах), кулдаун `21` день, жёсткий лимит **1 активный `supply_node`** в очереди.
 3. **Анти-перетасовка фронтов (`ai_tactical_prudence = 1`, v4):**
-   - `REASSIGN_TO_ANOTHER_FRONT_FACTOR (0.50 → 0.20)`, `REASSIGN_TO_ANOTHER_FRONT_IF_IN_COMBAT_FACTOR (0.20 → 0.05)` и `REDEPLOY_DISTANCE_VS_ORDER_SIZE (1.00 → 2.00)` — ИИ резко реже срывает дивизии с фронта и гоняет их по стратегической переброске с обнулением организации.
+   - `REASSIGN_TO_ANOTHER_FRONT_FACTOR (0.50 → 0.20)`, `REASSIGN_TO_ANOTHER_FRONT_IF_IN_COMBAT_FACTOR (0.20 → 0.05)` и `REDEPLOY_DISTANCE_VS_ORDER_SIZE (1.00 → 0.50, фикс v1.4.1)` — ИИ резко реже срывает дивизии с фронта и гоняет их по стратегической переброске с обнулением организации.
 4. **`AiSmartNaval` (`ai_smart_naval = 1`, НОВОЕ в `v1.4` — нормальные морские десанты и концентрация флота, 15 параметров `NDefines::NAI`):**
    - **Десанты:** `INVASION_TARGET_NO_PORT_FACTOR (0.30 → 0.05)`, `MIN_INVASION_UNITS_READY_TO_EXECUTE (0.25 → 0.60)`, `MIN_INVASION_ORG_FACTOR_TO_EXECUTE (0.40 → 0.65)`, `MIN_INVASION_PLAN_VALUE_TO_EXECUTE (0.30 → 0.45)`, отмена проигрышного штурма берега за **5 дней** вместо 30 (`720ч → 120ч`) при перевесе `1.8x` (вместо `3.5x`), повторно не суицидиться в проваленный порт `120` дней, крупнее группы (`INVASION_COASTAL_PROVS_PER_ORDER 24 → 40`).
    - **Флот (Strike Force):** `NAVY_PREFERED_MAX_SIZE (25 → 60)`, `CAPITAL_TASKFORCE_MAX_CAPITAL_COUNT (12 → 16)`, `SCREEN_TASKFORCE_MAX_SHIP_COUNT (12 → 24)`, `MAX_PATROL_TO_STRIKE_FORCE_RATIO (4.0 → 2.0)`, `STRIKE_FORCE_TARGET_RECALC_DAYS (5 → 3)`.
@@ -81,7 +81,7 @@
 
 ---
 
-## Откат между версиями (`v1.4.0` ↔ `v1.3.0` ↔ `v1.2.0` ↔ `v1.1.0` ↔ `v1.0.0`)
+## Откат между версиями (`v1.4.1` ↔ `v1.3.0` ↔ `v1.2.0` ↔ `v1.1.0` ↔ `v1.0.0`)
 
 - **Через GitHub Releases (проще всего):** скачайте архив нужного релиза со вкладки **Releases** репозитория и замените `version.dll` (Windows) или `libhoi4_rust_accel.so` (Linux).
 - **Точечно без смены версии:** любой модуль (`ai_capture_empty = 0`, `ai_smart_naval = 0`, `ai_smart_armor = 0`, `ai_smart_supply = 0` и т.д.) отключается одной строкой в `hoi4_accel.ini`.

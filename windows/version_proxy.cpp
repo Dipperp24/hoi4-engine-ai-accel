@@ -227,7 +227,7 @@ static constexpr size_t    MOVE_CMD_SIZE              = 0x88;
 // v1.4: Anti-Frontline-Shuffling, Smart Naval Invasions & Strike Force Concentration (NDefines::NAI)
 static constexpr uintptr_t RVA_NDEF_REASSIGN_FRONT        = 0x33e8df0; // fp64 (50,000 -> 20,000)
 static constexpr uintptr_t RVA_NDEF_REASSIGN_FRONT_COMBAT = 0x33e8e88; // fp64 (20,000 -> 5,000)
-static constexpr uintptr_t RVA_NDEF_REDEPLOY_DIST_VS_ORD  = 0x33eb748; // fp64 (100,000 -> 200,000)
+static constexpr uintptr_t RVA_NDEF_REDEPLOY_DIST_VS_ORD  = 0x33eb748; // fp64 (100,000 -> 50,000)
 static constexpr uintptr_t RVA_NDEF_INV_NO_PORT_FAC       = 0x33e95b8; // fp64 (30,000 -> 5,000)
 static constexpr uintptr_t RVA_NDEF_INV_MIN_PLAN_VAL      = 0x33e9d30; // fp64 (30,000 -> 45,000)
 static constexpr uintptr_t RVA_NDEF_INV_MIN_ORG_FAC       = 0x33e9db0; // fp64 (40,000 -> 65,000)
@@ -2665,10 +2665,10 @@ static void apply_ai_tactical_prudence_once() {
     raise_fp64(RVA_NDEF_AIFC_TGT_PORT_LVL,  200000LL);   // 1    -> 2    (Sheep AI)
     raise_fp64(RVA_NDEF_AIFC_COST_MTN,      400000LL);   // 3.0  -> 4.0  (Sheep AI: route spearheads around mountains)
 
-    // 6. Anti-Frontline-Shuffling (v1.4: stop ripping divisions across fronts and zeroing org!)
+    // 6. Anti-Frontline-Shuffling (v1.4.1: stop ripping divisions across fronts and zeroing org!)
     lower_fp64(RVA_NDEF_REASSIGN_FRONT,        20000LL);   // 0.50 -> 0.20
     lower_fp64(RVA_NDEF_REASSIGN_FRONT_COMBAT, 5000LL);    // 0.20 -> 0.05
-    raise_fp64(RVA_NDEF_REDEPLOY_DIST_VS_ORD,  200000LL);  // 1.00 -> 2.00
+    lower_fp64(RVA_NDEF_REDEPLOY_DIST_VS_ORD,  50000LL);   // 1.00 -> 0.50 (require path > 2x order_size before strat-redeploy; safe against path.len==1 underflow)
 
     char msg[256];
     std::snprintf(
@@ -3331,7 +3331,7 @@ static void emit_report(uint64_t measured_hours) {
     uint64_t tf_fps = (tf_ns > 0) ? (1000000000ULL / tf_ns) : 0;
     uint64_t sf_fps = g_smooth_fps.load(std::memory_order_relaxed);
 
-    put("\r\n================ HOI4 ACCEL v1.4-win64 REPORT ================\r\n");
+    put("\r\n================ HOI4 ACCEL v1.4.1-win64 REPORT ================\r\n");
     put("Measured Hours : %llu (%.2f game days)\r\n",
         static_cast<unsigned long long>(measured_hours), days);
     put("Wall Time      : %.3f s\r\n", wall_s);
@@ -3649,7 +3649,7 @@ static void hoi4_accel_init(HINSTANCE hinst_dll) {
     std::snprintf(
         hdr,
         sizeof(hdr),
-        "[hoi4-accel v1.4-win64] Attached to hoi4.exe (pid=%lu, base=0x%llx, preset=%s)\r\n",
+        "[hoi4-accel v1.4.1-win64] Attached to hoi4.exe (pid=%lu, base=0x%llx, preset=%s)\r\n",
         static_cast<unsigned long>(GetCurrentProcessId()),
         static_cast<unsigned long long>(g_exe_base),
         preset

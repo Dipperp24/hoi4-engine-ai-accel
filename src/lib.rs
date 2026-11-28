@@ -163,7 +163,7 @@ const MOVE_CMD_SIZE: usize = 0x88;
 // v1.4: Anti-Frontline-Shuffling, Smart Naval Invasions & Strike Force Concentration (NDefines::NAI)
 const OFF_NDEF_REASSIGN_FRONT: usize = 0x45947a8;         // fp64 (50_000 -> 20_000)
 const OFF_NDEF_REASSIGN_FRONT_COMBAT: usize = 0x45947b8;  // fp64 (20_000 -> 5_000)
-const OFF_NDEF_REDEPLOY_DIST_VS_ORD: usize = 0x45935c8;   // fp64 (100_000 -> 200_000)
+const OFF_NDEF_REDEPLOY_DIST_VS_ORD: usize = 0x45935c8;   // fp64 (100_000 -> 50_000)
 const OFF_NDEF_INV_NO_PORT_FAC: usize = 0x4595258;        // fp64 (30_000 -> 5_000)
 const OFF_NDEF_INV_MIN_PLAN_VAL: usize = 0x45952f8;       // fp64 (30_000 -> 45_000)
 const OFF_NDEF_INV_MIN_ORG_FAC: usize = 0x4595308;        // fp64 (40_000 -> 65_000)
@@ -2685,10 +2685,10 @@ unsafe fn apply_ai_tactical_prudence_once(pie: usize) {
     changed += raise_fp64(OFF_NDEF_AIFC_TGT_PORT_LVL, 200_000);  // 1    -> 2    (Sheep AI)
     changed += raise_fp64(OFF_NDEF_AIFC_COST_MTN, 400_000);      // 3.0  -> 4.0  (Sheep AI: route spearheads around mountains)
 
-    // 6. Anti-Frontline-Shuffling (v1.4: stop ripping divisions across fronts and zeroing org!)
+    // 6. Anti-Frontline-Shuffling (v1.4.1: stop ripping divisions across fronts and zeroing org!)
     changed += lower_fp64(OFF_NDEF_REASSIGN_FRONT, 20_000);        // 0.50 -> 0.20
     changed += lower_fp64(OFF_NDEF_REASSIGN_FRONT_COMBAT, 5_000);  // 0.20 -> 0.05 (never yank active combat divs)
-    changed += raise_fp64(OFF_NDEF_REDEPLOY_DIST_VS_ORD, 200_000); // 1.00 -> 2.00 (avoid strat-redeploy org wipes on short shifts)
+    changed += lower_fp64(OFF_NDEF_REDEPLOY_DIST_VS_ORD, 50_000);  // 1.00 -> 0.50 (require path > 2x order_size before strat-redeploy; safe against path.len==1 underflow)
 
     eprintln!(
         "[hoi4-rust-accel] AI Tactical Prudence v4 active ({}/43 NAI defines tuned; empty_tile_patch={}, anti_shuffle=1)",
@@ -4134,7 +4134,7 @@ fn emit_report(measured_hours: u64) {
     zones.sort_by(|a, b| b.2.cmp(&a.2));
 
     let mut out = String::new();
-    out.push_str("\n================ HOI4 RUST ACCEL v1.4 REPORT ================\n");
+    out.push_str("\n================ HOI4 RUST ACCEL v1.4.1 REPORT ================\n");
     out.push_str(&format!(
         "Measured Hours : {} ({:.2} game days)\n",
         measured_hours,
@@ -4665,7 +4665,7 @@ unsafe extern "C" fn hoi4_accel_init() {
         });
 
     eprintln!(
-        "[hoi4-rust-accel v1.4] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
+        "[hoi4-rust-accel v1.4.1] Attached to hoi4 (pid={}, pie_base={:#x}, preset={})",
         std::process::id(),
         base,
         preset
